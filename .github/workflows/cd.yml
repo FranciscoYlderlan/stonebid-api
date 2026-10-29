@@ -1,0 +1,135 @@
+# Destino: stonebid-api/.github/workflows/cd.yml
+# Publica no Cloud Run depois do workflow "CI" verde em main (produção) ou staging.
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main, staging]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cd-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Só CI verde de push (não de pull request) nas branches de deploy.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    env:
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      REGION: ${{ secrets.GCP_REGION }}
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      RUNTIME_SA: ${{ secrets.GCP_RUNTIME_SA }}
+      CLOUDSQL_CONNECTION: ${{ secrets.CLOUDSQL_CONNECTION }}
+    steps:
+      - name: Escolher ambiente
+        id: amb
+        env:
+          CORS_PROD: ${{ vars.CORS_ORIGIN }}
+          CORS_STAGING: ${{ vars.CORS_ORIGIN_STAGING }}
+        run: |
+          if [ "$BRANCH" = "main" ]; then
+            {
+              echo "service=stonebid-api"
+              echo "job=stonebid-api-migrate"
+              echo "min=1"
+              echo "cpu_flag=--no-cpu-throttling"
+              echo "secrets=DATABASE_URL=DATABASE_URL:latest,JWT_SECRET=JWT_SECRET:latest,SEED_PASSWORD=SEED_PASSWORD:latest"
+              # Delimitador ^@^ porque CORS_ORIGIN pode ter vírgulas.
+              echo "envs=^@^NODE_ENV=production@MCP_ENABLED=false@CORS_ORIGIN=${CORS_PROD}"
+            } >> "$GITHUB_OUTPUT"
+          elif [ "$BRANCH" = "staging" ]; then
+            {
+              echo "service=stonebid-api-staging"
+              echo "job=stonebid-api-staging-migrate"
+              # Economia: staging dorme sem uso (cold start de alguns segundos e
+              # agendador da liquidação parado enquanto não houver requisição).
+              echo "min=0"
+              echo "cpu_flag=--cpu-throttling"
+              echo "secrets=DATABASE_URL=DATABASE_URL_STAGING:latest,JWT_SECRET=JWT_SECRET_STAGING:latest,SEED_PASSWORD=SEED_PASSWORD:latest,MCP_API_KEY=MCP_API_KEY_STAGING:latest"
+              echo "envs=^@^NODE_ENV=production@MCP_ENABLED=true@CORS_ORIGIN=${CORS_STAGING}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "Branch $BRANCH não publica." && exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Autenticar no GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build e push da imagem
+        id: img
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/stonebid/stonebid-api:${SHA}"
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Migração e seed (Cloud Run Job)
+        env:
+          IMAGE: ${{ steps.img.outputs.image }}
+          JOB: ${{ steps.amb.outputs.job }}
+          SECRETS: ${{ steps.amb.outputs.secrets }}
+          ENVS: ${{ steps.amb.outputs.envs }}
+        run: |
+          gcloud run jobs deploy "$JOB" \
+            --image="$IMAGE" --region="$REGION" \
+            --service-account="$RUNTIME_SA" \
+            --set-cloudsql-instances="$CLOUDSQL_CONNECTION" \
+            --set-secrets="$SECRETS" \
+            --set-env-vars="$ENVS" \
+            --command=sh \
+            --args="-c,npx prisma migrate deploy && npm run db:seed" \
+            --max-retries=0 --task-timeout=600s \
+            --execute-now --wait
+
+      - name: Deploy no Cloud Run
+        env:
+          IMAGE: ${{ steps.img.outputs.image }}
+          SERVICE: ${{ steps.amb.outputs.service }}
+          MIN: ${{ steps.amb.outputs.min }}
+          CPU_FLAG: ${{ steps.amb.outputs.cpu_flag }}
+          SECRETS: ${{ steps.amb.outputs.secrets }}
+          ENVS: ${{ steps.amb.outputs.envs }}
+        run: |
+          # --port=3333 faz o Cloud Run definir PORT=3333, a porta do app.
+          # --timeout=3600: conexões longas do tempo real (SSE/WebSocket) até 60 min.
+          gcloud run deploy "$SERVICE" \
+            --image="$IMAGE" --region="$REGION" \
+            --service-account="$RUNTIME_SA" \
+            --add-cloudsql-instances="$CLOUDSQL_CONNECTION" \
+            --set-secrets="$SECRETS" \
+            --set-env-vars="$ENVS" \
+            --min-instances="$MIN" "$CPU_FLAG" \
+            --cpu=1 --memory=512Mi --port=3333 --timeout=3600 \
+            --allow-unauthenticated --quiet
+
+      - name: URL no resumo
+        env:
+          SERVICE: ${{ steps.amb.outputs.service }}
+        run: |
+          URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')"
+          {
+            echo "### Deploy de \`$SERVICE\` ($BRANCH)"
+            echo ""
+            echo "- Commit: \`$SHA\`"
+            echo "- URL: $URL"
+          } >> "$GITHUB_STEP_SUMMARY"
