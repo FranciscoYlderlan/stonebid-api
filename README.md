@@ -36,7 +36,7 @@ Cada item tem a seção própria abaixo, com os detalhes e os códigos de erro.
 - **Saldo comprometido:** quem lidera um lote tem o valor do lance preso; ao ser superado, o valor volta na hora. Um lance só passa se couber no disponível (total − comprometido), somando todos os lotes. Ver [Carteira](#carteira-licitante).
 - **Anti-sniping:** lance nos últimos 2 minutos empurra o fim para 2 minutos depois do lance, sem limite de prorrogações. Ver [Lances](#lances).
 - **Liquidação:** no fim, o vencedor paga, o leiloeiro recebe e nasce o comprovante público. Ver [Liquidação e comprovante](#liquidação-e-comprovante).
-- **Cancelamento:** só o leiloeiro dono, com motivo, antes do fim e **sem lances**. Como não há lance, não há saldo preso nem estorno. Ver [Lotes](#lotes).
+- **Cancelamento:** só o leiloeiro dono, com motivo, antes do fim. Com lances (OPC-2, `CANCEL_WITH_BIDS_ENABLED`), o líder recebe estorno (`REFUND`) do lance atual e nenhum saldo fica preso. Ver [Estorno no cancelamento](#estorno-no-cancelamento-opc-2).
 - **Uma obra, um lote:** a mesma obra não fica em dois lotes ativos ou arrematados. Ver [Lotes](#lotes).
 - **Histórico à prova de adulteração:** cadeia de hash selada, conferida a cada acesso. Ver [Auditoria](#auditoria).
 
@@ -82,14 +82,15 @@ Testes de aceite (T-xx), marcados no nome do `describe`/`it`:
 | ----- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
 | T-01  | Regras do lance: mínimo, líder, agendado, encerrado, instante do fim, cancelado, saldo     | `test/unit/bid-rules.test.ts`, `test/e2e/place-bid.test.ts`         |
 | T-02  | Concorrência: 12 lances simultâneos no mesmo lote, sem corrida                             | `test/e2e/place-bid.test.ts`                                        |
-| T-03  | Saldo comprometido entre lotes (o exemplo da Ana, passos 1 a 5)                            | `test/e2e/place-bid.test.ts`                                        |
+| T-03  | Saldo comprometido entre lotes (o exemplo da Ana, passos 1 a 5, e o estorno no passo 6)    | `test/e2e/place-bid.test.ts`                                        |
 | T-04  | Anti-sniping, puro e com banco                                                             | `test/unit/settlement-rules.test.ts`, `test/e2e/settlement.test.ts` |
 | T-05  | Liquidação: vencedor, crédito do leiloeiro, comprovante, idempotência                      | `test/e2e/settlement.test.ts`                                       |
 | T-06  | Auditoria: adulteração por SQL direto em cada ponto da cadeia, do comprovante e do extrato | `test/e2e/audit.test.ts`, `test/unit/lot-audit.test.ts`             |
 | T-07  | API externa fora do ar: vitrine, detalhe, imagem e comprovante seguem de pé                | `test/e2e/lots.test.ts`, `test/e2e/receipts-and-my-bids.test.ts`    |
 | T-08  | Papéis e posse: leiloeiro não dá lance, só o dono cancela                                  | `test/e2e/bids.test.ts`, `test/e2e/lots.test.ts`                    |
 | T-09  | Privacidade: respostas públicas só com pseudônimo, sem nome, e-mail nem id do usuário      | `test/e2e/bids.test.ts`, `audit.test.ts`, `receipts-and-my-bids…`   |
-| T-10a | Cancelamento × lance ao mesmo tempo: só um passa                                           | `test/unit/bid-rules.test.ts`, `test/e2e/place-bid.test.ts`         |
+| T-10a | Cancelamento × lance ao mesmo tempo, sem o OPC-2: só um passa                              | `test/unit/bid-rules.test.ts`, `test/e2e/place-bid.test.ts`         |
+| T-10b | Cancelamento com lances (OPC-2): estorno do líder, corrida, liquidação e auditoria         | `test/unit/bid-rules.test.ts`, `place-bid.test.ts`, `audit.test.ts` |
 | T-11  | Idempotência: mesma `Idempotency-Key` repetida ou em paralelo gera um depósito ou lance só | `test/e2e/wallet.test.ts`, `test/e2e/place-bid.test.ts`             |
 
 ## Scripts
@@ -106,24 +107,25 @@ Testes de aceite (T-xx), marcados no nome do `describe`/`it`:
 
 Validadas com zod em `src/env/` (o app não sobe com valor inválido). Modelo: `.env.example`.
 
-| Variável               | Obrigatória                  | Padrão                         | Uso                                                                 |
-| ---------------------- | ---------------------------- | ------------------------------ | ------------------------------------------------------------------- |
-| `NODE_ENV`             | não                          | `development`                  | `development`, `test` ou `production`                               |
-| `PORT`                 | não                          | `3333`                         | Porta HTTP                                                          |
-| `HOST`                 | não                          | `0.0.0.0`                      | Interface de escuta                                                 |
-| `DATABASE_URL`         | sim                          | —                              | Conexão PostgreSQL                                                  |
-| `JWT_SECRET`           | sim                          | —                              | Segredo do JWT (mín. 32 caracteres)                                 |
-| `SEAL_SECRET`          | sim                          | —                              | Segredo do HMAC dos selos de lance, cabeça e comprovante (mín. 32)  |
-| `PSEUDONYM_SECRET`     | sim                          | —                              | Segredo do pseudônimo do licitante no lote (mín. 32), outro segredo |
-| `CORS_ORIGIN`          | sim                          | —                              | Origens liberadas, separadas por vírgula                            |
-| `SEED_PASSWORD`        | com MCP ligada e para o seed | —                              | Senha dos usuários de teste                                         |
-| `MCP_ENABLED`          | não                          | `false`                        | Liga a camada MCP em `/mcp`                                         |
-| `MCP_API_KEY`          | com MCP ligada               | —                              | Chave exigida no `/mcp` (mín. 16 caracteres)                        |
-| `DEPOSIT_LIMIT_CENTS`  | não                          | `1000000`                      | Teto por depósito, em centavos (R$ 10.000,00)                       |
-| `ITEMS_API_BASE_URL`   | não                          | `https://api.artic.edu/api/v1` | API pública de itens (Art Institute of Chicago)                     |
-| `ITEMS_IIIF_BASE_URL`  | não                          | `https://www.artic.edu/iiif/2` | Imagens IIIF (reserva, se a resposta não trouxer `config.iiif_url`) |
-| `ITEMS_API_TIMEOUT_MS` | não                          | `5000`                         | Timeout de cada chamada à API de itens                              |
-| `LOT_IMAGE_MAX_BYTES`  | não                          | `2097152` (2 MB)               | Tamanho máximo da imagem copiada para o banco                       |
+| Variável                   | Obrigatória                  | Padrão                         | Uso                                                                 |
+| -------------------------- | ---------------------------- | ------------------------------ | ------------------------------------------------------------------- |
+| `NODE_ENV`                 | não                          | `development`                  | `development`, `test` ou `production`                               |
+| `PORT`                     | não                          | `3333`                         | Porta HTTP                                                          |
+| `HOST`                     | não                          | `0.0.0.0`                      | Interface de escuta                                                 |
+| `DATABASE_URL`             | sim                          | —                              | Conexão PostgreSQL                                                  |
+| `JWT_SECRET`               | sim                          | —                              | Segredo do JWT (mín. 32 caracteres)                                 |
+| `SEAL_SECRET`              | sim                          | —                              | Segredo do HMAC dos selos de lance, cabeça e comprovante (mín. 32)  |
+| `PSEUDONYM_SECRET`         | sim                          | —                              | Segredo do pseudônimo do licitante no lote (mín. 32), outro segredo |
+| `CORS_ORIGIN`              | sim                          | —                              | Origens liberadas, separadas por vírgula                            |
+| `SEED_PASSWORD`            | com MCP ligada e para o seed | —                              | Senha dos usuários de teste                                         |
+| `MCP_ENABLED`              | não                          | `false`                        | Liga a camada MCP em `/mcp`                                         |
+| `MCP_API_KEY`              | com MCP ligada               | —                              | Chave exigida no `/mcp` (mín. 16 caracteres)                        |
+| `DEPOSIT_LIMIT_CENTS`      | não                          | `1000000`                      | Teto por depósito, em centavos (R$ 10.000,00)                       |
+| `CANCEL_WITH_BIDS_ENABLED` | não                          | `false`                        | OPC-2: cancelar lote com lances, com estorno ao líder               |
+| `ITEMS_API_BASE_URL`       | não                          | `https://api.artic.edu/api/v1` | API pública de itens (Art Institute of Chicago)                     |
+| `ITEMS_IIIF_BASE_URL`      | não                          | `https://www.artic.edu/iiif/2` | Imagens IIIF (reserva, se a resposta não trouxer `config.iiif_url`) |
+| `ITEMS_API_TIMEOUT_MS`     | não                          | `5000`                         | Timeout de cada chamada à API de itens                              |
+| `LOT_IMAGE_MAX_BYTES`      | não                          | `2097152` (2 MB)               | Tamanho máximo da imagem copiada para o banco                       |
 
 ## Autenticação
 
@@ -162,8 +164,8 @@ A migration `20261030110000_reset_bids_pseudonym_6` apagou, uma vez, os lances e
 
 Saldo simulado em **centavos inteiros**. O saldo não é guardado: é derivado do extrato `wallet_movements`, que é só de inserção (nunca update nem delete). Cada movimento tem valor positivo; o sinal vem do tipo:
 
-- **total** = `DEPOSIT` + `CREDIT` + `REFUND` − `DEBIT`
-- **comprometido** = `COMMIT` − `RELEASE` (soma dos lances em que o licitante lidera agora)
+- **total** = `DEPOSIT` + `CREDIT` − `DEBIT`
+- **comprometido** = `COMMIT` − `RELEASE` − `REFUND` (soma dos lances em que o licitante lidera agora, fora dos lotes cancelados)
 - **disponível** = total − comprometido
 
 Só `BIDDER`: leiloeiro → 403 `FORBIDDEN`; sem token → 401 `UNAUTHORIZED`.
@@ -182,17 +184,17 @@ O extrato é ordenado por uma sequência global crescente (`seq`), não pelo hor
 
 Rotas protegidas usam `Authorization: Bearer <token>`. Valores em **centavos inteiros**; datas ISO 8601 em UTC.
 
-| Rota                                   | Quem            | Sucesso                                                                                                  | Erros                                                                                                                                                                 |
-| -------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /items/search?q=&page=`           | AUCTIONEER      | 200 `{ items: [{ externalId, title, imageUrl, attributes, auction }], page, totalPages }`                | 502 `EXTERNAL_API_UNAVAILABLE`                                                                                                                                        |
-| `GET /items/images/:imageId/thumbnail` | público         | 200 miniatura (400 px) baixada pelo servidor no IIIF, `Cache-Control: public, max-age=604800, immutable` | 400 `VALIDATION_ERROR` (id não é UUID), 404 `ITEM_NOT_FOUND`, 429 `TOO_MANY_REQUESTS` (120/min por IP), 502 `EXTERNAL_API_UNAVAILABLE`                                |
-| `POST /lots`                           | AUCTIONEER      | 201 `lot`                                                                                                | 400 `VALIDATION_ERROR`, 404 `ITEM_NOT_FOUND`, 409 `ITEM_ALREADY_AUCTIONED`, 422 `ITEM_IMAGE_TOO_LARGE`, 502 `EXTERNAL_API_UNAVAILABLE`                                |
-| `GET /lots`                            | público         | 200 `{ serverTime, live, scheduled, ended }`                                                             |                                                                                                                                                                       |
-| `GET /lots/:id`                        | público         | 200 `{ serverTime, lot }` (cancelado também)                                                             | 404 `LOT_NOT_FOUND`                                                                                                                                                   |
-| `GET /lots/:id/image`                  | público         | 200 bytes da imagem, `Cache-Control: public, max-age=86400`                                              | 404 `LOT_NOT_FOUND`                                                                                                                                                   |
-| `GET /auctioneer/lots`                 | AUCTIONEER      | 200 `{ serverTime, items, totalReceivedCents }`, só os lotes do próprio leiloeiro, inclusive cancelados  |                                                                                                                                                                       |
-| `POST /lots/:id/cancel`                | AUCTIONEER dono | body `{ reason }` (3 a 280 caracteres) → 200 `lot`                                                       | 422 `VALIDATION_ERROR` (motivo), 403 `FORBIDDEN` (não é o dono), 404, 409 `LOT_ENDED` (encerrado ou liquidado), 409 `LOT_NOT_CANCELABLE` (já cancelado ou com lances) |
-| `GET /receipts/:publicId`              | público         | 200 `{ receipt }` (abaixo)                                                                               | 404 `RECEIPT_NOT_FOUND` (inexistente ou adulterado)                                                                                                                   |
+| Rota                                   | Quem            | Sucesso                                                                                                  | Erros                                                                                                                                                                                        |
+| -------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /items/search?q=&page=`           | AUCTIONEER      | 200 `{ items: [{ externalId, title, imageUrl, attributes, auction }], page, totalPages }`                | 502 `EXTERNAL_API_UNAVAILABLE`                                                                                                                                                               |
+| `GET /items/images/:imageId/thumbnail` | público         | 200 miniatura (400 px) baixada pelo servidor no IIIF, `Cache-Control: public, max-age=604800, immutable` | 400 `VALIDATION_ERROR` (id não é UUID), 404 `ITEM_NOT_FOUND`, 429 `TOO_MANY_REQUESTS` (120/min por IP), 502 `EXTERNAL_API_UNAVAILABLE`                                                       |
+| `POST /lots`                           | AUCTIONEER      | 201 `lot`                                                                                                | 400 `VALIDATION_ERROR`, 404 `ITEM_NOT_FOUND`, 409 `ITEM_ALREADY_AUCTIONED`, 422 `ITEM_IMAGE_TOO_LARGE`, 502 `EXTERNAL_API_UNAVAILABLE`                                                       |
+| `GET /lots`                            | público         | 200 `{ serverTime, live, scheduled, ended }`                                                             |                                                                                                                                                                                              |
+| `GET /lots/:id`                        | público         | 200 `{ serverTime, lot }` (cancelado também)                                                             | 404 `LOT_NOT_FOUND`                                                                                                                                                                          |
+| `GET /lots/:id/image`                  | público         | 200 bytes da imagem, `Cache-Control: public, max-age=86400`                                              | 404 `LOT_NOT_FOUND`                                                                                                                                                                          |
+| `GET /auctioneer/lots`                 | AUCTIONEER      | 200 `{ serverTime, items, totalReceivedCents }`, só os lotes do próprio leiloeiro, inclusive cancelados  |                                                                                                                                                                                              |
+| `POST /lots/:id/cancel`                | AUCTIONEER dono | body `{ reason }` (3 a 280 caracteres) → 200 `lot`                                                       | 422 `VALIDATION_ERROR` (motivo), 403 `FORBIDDEN` (não é o dono), 404, 409 `LOT_ENDED` (encerrado ou liquidado), 409 `LOT_NOT_CANCELABLE` (já cancelado; com lances só com o OPC-2 desligado) |
+| `GET /receipts/:publicId`              | público         | 200 `{ receipt }` (abaixo)                                                                               | 404 `RECEIPT_NOT_FOUND` (inexistente ou adulterado)                                                                                                                                          |
 
 - **Corpo do `POST /lots`:** `{ externalId, startingBidCents, minIncrementCents, startsAt, endsAt }`. O lance inicial é o valor mínimo do lote. O início não pode estar no passado (tolerância de 60 s) e o fim fica pelo menos 5 minutos depois do início. Não há edição de lote.
 - **Miniatura da busca:** o `imageUrl` de cada item da busca é relativo à API (`/items/images/{imageId}/thumbnail`), não o IIIF da AIC: no navegador, o IIIF responde com o desafio anti-robô da Cloudflare e o `<img>` falha. A rota é pública porque o `<img>` não manda o JWT, e as imagens são de domínio público. O servidor só aceita id de imagem em UUID e monta a URL no `ITEMS_IIIF_BASE_URL` (sem receber URL do cliente).
@@ -200,7 +202,7 @@ Rotas protegidas usam `Authorization: Bearer <token>`. Valores em **centavos int
 - **Uma obra, um lote (RN-19):** criar lote de uma obra que já tem lote agendado, ao vivo ou arrematado (encerrado com lances) → 409 `ITEM_ALREADY_AUCTIONED`, com `error.details = { status: "SCHEDULED" | "LIVE" | "SOLD", lotId }` do lote que prende a obra. Lote cancelado ou encerrado sem lances libera a obra. Pedidos simultâneos da mesma obra criam um lote só. Na busca, `auction` mostra a mesma situação (`{ status, lotId }`) ou `null` se a obra está livre.
 - **Estado** (`status`) vem do relógio do servidor: `SCHEDULED` antes do início, `LIVE` entre início e fim, `ENDED` a partir do fim (e sempre depois de liquidado), `CANCELED` se o leiloeiro cancelou. Cancelamento e liquidação são gravados. Use `serverTime` para contagens regressivas.
 - **Vitrine:** ao vivo pelo fim mais próximo, agendados pelo início mais próximo, encerrados pelo fim mais recente (até 30). Cancelados ficam fora.
-- **Cancelamento:** só agendado ou ao vivo e sem lances, sempre com motivo (`cancelReason`, sem espaços nas pontas). Lances, fim e cancelamento anterior são lidos com a linha do lote travada, a mesma trava do lance: cancelamento e lance ao mesmo tempo, só um passa.
+- **Cancelamento:** só agendado ou ao vivo, sempre com motivo (`cancelReason`, sem espaços nas pontas); com lances, só com o OPC-2 ligado, e o líder recebe estorno (subseção abaixo). Lances, fim e cancelamento anterior são lidos com a linha do lote travada, a mesma trava do lance: cancelamento e lance ao mesmo tempo nunca deixam lance preso num lote cancelado.
 
 ### Estorno no cancelamento (OPC-2)
 
@@ -279,19 +281,21 @@ Disparo: um agendador de 5 s no processo (`server.ts`, desligado nos testes) liq
 2. **Cabeça do lote:** `head_seq`, `head_hash` e `head_seal` batem com o último lance (`HEAD_MISMATCH`, `seq: null`). Pega o último lance apagado.
 3. **Comprovante:** lote `SOLD` tem de ter um e lote não arrematado não pode ter; o selo `receipt:v1` confere e `lot_id`, `bid_count`, `final_hash`, `winner_pseudonym` e `amount_cents` são os do lote e do último lance (`RECEIPT_MISMATCH`, `seq: null`).
 4. **Liquidação × lances × extrato** (`SETTLEMENT_MISMATCH`, `seq: null`): `settled_at` e `result` andam juntos; lote liquidado com lances é sempre `SOLD` e `SOLD` exige lances (trocar o resultado para `NO_WINNER` e apagar comprovante e extrato não passa); lote `SOLD` tem um `DEBIT` só, do licitante do último lance e no valor dele, e um `CREDIT` só, do leiloeiro, no mesmo valor; lote não arrematado não tem `DEBIT` nem `CREDIT`.
-5. **Lance atual e líder:** `current_bid_cents` e `leader_id` do lote são o valor e o licitante do último lance; sem lances, os dois são `null` (`HEAD_MISMATCH`, `seq: null`: são gravados na mesma transação da cabeça e fazem parte dela).
+5. **Estorno do cancelamento** (`CANCEL_MISMATCH`, `seq: null`): lote cancelado com lances tem um `REFUND` só, do licitante do último lance e no valor dele; qualquer outro lote não tem `REFUND`.
+6. **Lance atual e líder:** `current_bid_cents` e `leader_id` do lote são o valor e o licitante do último lance; sem lances, os dois são `null` (`HEAD_MISMATCH`, `seq: null`: são gravados na mesma transação da cabeça e fazem parte dela).
 
-| Motivo                | O que pegou                                                     | `seq`                     |
-| --------------------- | --------------------------------------------------------------- | ------------------------- |
-| `GAP`                 | numeração com buraco (lance apagado no meio)                    | primeiro número que falta |
-| `CONTENT_CHANGED`     | hash recalculado diferente do guardado (valor, hora, licitante) | lance adulterado          |
-| `BAD_SEAL`            | selo do lance não confere                                       | lance adulterado          |
-| `BROKEN_LINK`         | `prev_hash` diferente do hash do lance anterior                 | lance adulterado          |
-| `HEAD_MISMATCH`       | cabeça selada, lance atual ou líder diferentes do último lance  | `null`                    |
-| `RECEIPT_MISMATCH`    | comprovante ausente, sobrando ou com campo/selo errado          | `null`                    |
-| `SETTLEMENT_MISMATCH` | resultado, `DEBIT` ou `CREDIT` incoerentes com os lances        | `null`                    |
+| Motivo                | O que pegou                                                      | `seq`                     |
+| --------------------- | ---------------------------------------------------------------- | ------------------------- |
+| `GAP`                 | numeração com buraco (lance apagado no meio)                     | primeiro número que falta |
+| `CONTENT_CHANGED`     | hash recalculado diferente do guardado (valor, hora, licitante)  | lance adulterado          |
+| `BAD_SEAL`            | selo do lance não confere                                        | lance adulterado          |
+| `BROKEN_LINK`         | `prev_hash` diferente do hash do lance anterior                  | lance adulterado          |
+| `HEAD_MISMATCH`       | cabeça selada, lance atual ou líder diferentes do último lance   | `null`                    |
+| `RECEIPT_MISMATCH`    | comprovante ausente, sobrando ou com campo/selo errado           | `null`                    |
+| `SETTLEMENT_MISMATCH` | resultado, `DEBIT` ou `CREDIT` incoerentes com os lances         | `null`                    |
+| `CANCEL_MISMATCH`     | `REFUND` ausente, duplicado ou fora de lote cancelado com lances | `null`                    |
 
-**Recalculada a cada acesso (RF-61).** Nada do veredito é guardado: lote, lances, comprovante, `DEBIT` e `CREDIT` são lidos numa transação `REPEATABLE READ` (um lance que entra no meio não parece adulteração da cabeça) e conferidos de novo; a resposta vai com `Cache-Control: no-store`. A lógica é pura (`src/domain/integrity/lot-audit.ts`), testada sem banco, e o T-06 (`test/e2e/audit.test.ts`) adultera o banco por SQL direto (íntegro, valor editado, lance apagado no meio, lance inserido, último lance apagado, selo trocado, ligação quebrada, lance atual e líder adulterados), com o lote ao vivo e depois da liquidação, mais comprovante, `DEBIT` e `CREDIT` adulterados e resultado trocado para `NO_WINNER`.
+**Recalculada a cada acesso (RF-61).** Nada do veredito é guardado: lote, lances, comprovante, `DEBIT`, `CREDIT` e `REFUND` são lidos numa transação `REPEATABLE READ` (um lance que entra no meio não parece adulteração da cabeça) e conferidos de novo; a resposta vai com `Cache-Control: no-store`. A lógica é pura (`src/domain/integrity/lot-audit.ts`), testada sem banco, e o T-06 (`test/e2e/audit.test.ts`) adultera o banco por SQL direto (íntegro, valor editado, lance apagado no meio, lance inserido, último lance apagado, selo trocado, ligação quebrada, lance atual e líder adulterados), com o lote ao vivo e depois da liquidação, mais comprovante, `DEBIT` e `CREDIT` adulterados e resultado trocado para `NO_WINNER`.
 
 **Limite.** Quem tem o banco **e** o `SEAL_SECRET`, ou um backup antigo com uma cabeça anterior, ainda forja um histórico que passa; só uma âncora externa resolveria. Também passa como `INTACT`, sem o segredo, apagar **todos** os lances de um lote ainda não liquidado e zerar a cabeça (`head_seq = 0`, `head_hash` e `head_seal` nulos) junto com lance atual e líder: uma cadeia vazia é íntegra por definição. Um `REVOKE UPDATE, DELETE ON bids` para o usuário da aplicação seria uma camada extra opcional; não está aplicado.
 
@@ -378,7 +382,7 @@ Escolhas de projeto da API, cada uma com o motivo. Onde há um limite, ele está
 - **Resultado logo depois do fim.** O `status` vem do relógio do servidor, então o lote passa a `ENDED` no instante do fim; o `result` chega com a liquidação, um passo à parte, feito numa transação com o lote travado. Ela roda no agendador a cada 5 s e em toda leitura que mostra o lote (`GET /lots`, `GET /lots/:id`, auditoria, `GET /auctioneer/lots`, `GET /me/bids`), o que cobre o staging: ele dorme sem uso, e o agendador só roda enquanto houver requisição. `GET /lots/:id/bids` só lista os lances e não liquida.
 - **Fim exato e anti-sniping sem teto.** O fim é o primeiro instante de `ENDED`, então um lance nesse instante recebe `LOT_ENDED`. A prorrogação segue a RN-10, sem limite: enquanto houver lance nos últimos 2 minutos, o lote continua. `originalEndsAt` guarda o fim marcado na criação.
 - **Quem lidera espera ser coberto** (`ALREADY_WINNING`). Faz parte das regras do lance (RN-02 a RN-05): o próximo lance vem de outro licitante.
-- **Cancelamento só sem lances.** Assim nenhum saldo fica preso num lote cancelado e não há estorno a fazer. Lote com lances segue até o fim e é liquidado.
+- **Cancelamento com lances estorna o líder.** Com o OPC-2 ligado (produção e staging), o lote com lances pode ser cancelado até o fim, e o líder recebe um `REFUND` do lance atual na mesma transação; os superados já tinham o valor liberado. Assim nenhum saldo fica preso num lote cancelado. O `REFUND` libera o comprometido em vez de somar ao total, porque o dinheiro nunca saiu da carteira; somar criaria dinheiro. Como o `canceledAt` não tem selo, a auditoria confere o estorno contra os lances (`CANCEL_MISMATCH`).
 - **Teto por depósito.** `DEPOSIT_LIMIT_CENTS` vale para cada depósito (Q-10); vários depósitos somam, sem teto de saldo. O saldo é simulado e não há saque.
 - **Cadeia vazia conta como `INTACT`.** A auditoria confere os lances que existem, e uma cadeia sem lances é íntegra por definição. Por isso apagar todos os lances de um lote ainda não liquidado e zerar a cabeça, o lance atual e o líder passa na auditoria; quem tem o banco e o `SEAL_SECRET`, ou um backup antigo, também forja um histórico que passa. Uma âncora externa fecharia essas brechas, e um `REVOKE UPDATE, DELETE ON bids` seria uma camada extra (ver [Auditoria](#auditoria)).
 - **Comprovante só quando confere.** `GET /receipts/:publicId` só devolve comprovante com selo válido e igual à cabeça do lote; adulterado responde 404, como inexistente. O veredito, com o motivo, fica na auditoria do lote (`auditPath`).
