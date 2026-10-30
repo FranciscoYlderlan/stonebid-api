@@ -14,6 +14,16 @@ import { lotsRoutes } from './infra/http/routes/lots-routes.ts';
 import { walletRoutes } from './infra/http/routes/wallet-routes.ts';
 import { mcpPlugin } from './infra/mcp/plugin.ts';
 
+/**
+ * Proxy confiável para o `request.ip` (chave do limite por IP): só o salto imediato quando ele vem
+ * da faixa link-local `169.254.0.0/16`, de onde o proxy interno do Cloud Run entrega a requisição.
+ * Nesse caso vale a última entrada do `X-Forwarded-For`, a que o Google Front End acrescenta com o
+ * IP real do cliente; o que o cliente mandar no cabeçalho fica à esquerda e é ignorado. Conexão de
+ * outro endereço (local, testes, acesso direto) usa o próprio socket. O Fastify 5.12.1+ desliga a
+ * forma numérica (`trustProxy: 1`) por não validar o endereço do salto (CVE-2026-16732).
+ */
+export const TRUSTED_PROXY = '169.254.0.0/16';
+
 export interface BuildAppOptions {
   logger?: FastifyServerOptions['logger'];
   mcpEnabled?: boolean;
@@ -24,6 +34,7 @@ export interface BuildAppOptions {
 /** Monta a aplicação sem escutar porta (usado pelo server.ts e pelos testes E2E). */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
+    trustProxy: TRUSTED_PROXY,
     logger: options.logger ?? (env.NODE_ENV === 'test' ? false : { level: 'info' }),
   });
 
@@ -37,7 +48,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   await app.register(jwt, { secret: env.JWT_SECRET });
 
-  // Limite só nas rotas que pedem (`config.rateLimit`), por IP, em memória por instância.
+  // Limite só nas rotas que pedem (`config.rateLimit`), por IP real (`TRUSTED_PROXY`), em memória
+  // por instância.
   await app.register(rateLimit, {
     global: false,
     errorResponseBuilder: (_request, context) => new TooManyRequestsError(context.after),
