@@ -82,8 +82,9 @@ function onlyMovement(
 }
 
 /**
- * Comprovante (item 4): existe só em lote arrematado; selo `receipt:v1` confere; contagem, hash
- * final, pseudônimo do vencedor e valor batem com o último lance.
+ * Comprovante (item 3): lote `SOLD` tem de ter comprovante e lote não arrematado não pode ter;
+ * selo `receipt:v1` confere; lote, contagem, hash final, pseudônimo do vencedor e valor batem com
+ * o lote e o último lance.
  */
 function receiptOk(input: LotAuditInput, last: ChainBid | undefined, secrets: ChainSecrets) {
   const { receipt } = input;
@@ -100,7 +101,7 @@ function receiptOk(input: LotAuditInput, last: ChainBid | undefined, secrets: Ch
 }
 
 /**
- * Liquidação × lances × extrato (item 5):
+ * Liquidação × lances × extrato (item 4):
  * - `settledAt` e `result` andam juntos (os dois gravados ou os dois `null`);
  * - lote liquidado com lances é sempre `SOLD`, e `SOLD` exige lances (RN-11): trocar o resultado
  *   para `NO_WINNER` e apagar comprovante e DEBIT não passa;
