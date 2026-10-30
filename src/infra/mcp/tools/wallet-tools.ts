@@ -15,7 +15,7 @@ export function registerWalletTools(
     {
       title: 'Saldo da carteira',
       description:
-        'GET /wallet: total, comprometido, disponível e teto do depósito, em centavos. ' +
+        'GET /wallet: total, comprometido, disponível e teto do depósito (depositLimitCents), em centavos. ' +
         'Só licitante (entre como licitante-1 ou licitante-2).',
     },
     async () =>
@@ -28,6 +28,7 @@ export function registerWalletTools(
       title: 'Depositar na carteira',
       description:
         'POST /wallet/deposits com { amountCents } e o cabeçalho Idempotency-Key. ' +
+        'Devolve { movement, wallet }, com wallet no formato do wallet_get (inclui depositLimitCents). ' +
         'Repetir a mesma chave com o mesmo valor devolve o mesmo depósito (200), sem depositar de novo; ' +
         'com outro valor, 409. Use uma chave nova (8 a 128 caracteres) para cada depósito.',
       inputSchema: { ...depositBodySchema.shape, idempotencyKey: idempotencyKeySchema },
