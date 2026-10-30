@@ -2,7 +2,11 @@ import type { Lot } from '../../domain/entities/lot.ts';
 import type { Receipt } from '../../domain/entities/receipt.ts';
 import { LotNotFoundError } from '../../domain/errors/lot-not-found-error.ts';
 import type { ChainBid, ChainSecrets } from '../../domain/integrity/bid-chain.ts';
-import { auditLot, type AuditDebit, type AuditResult } from '../../domain/integrity/lot-audit.ts';
+import {
+  auditLot,
+  type AuditMovement,
+  type AuditResult,
+} from '../../domain/integrity/lot-audit.ts';
 import type { LotsRepository } from '../../domain/repositories/lots-repository.ts';
 import type { DueLotsSettler } from './settle-lot.ts';
 
@@ -12,7 +16,8 @@ export interface LotAuditSnapshot {
   /** Lances em ordem de `seq`, como estão no banco. */
   bids: ChainBid[];
   receipt: Receipt | null;
-  debits: AuditDebit[];
+  debits: AuditMovement[];
+  credits: AuditMovement[];
 }
 
 /** Porta de leitura da auditoria; `null` se o lote não existe. */
@@ -58,9 +63,14 @@ export class AuditLotUseCase {
           headHash: snapshot.lot.headHash,
           headSeal: snapshot.lot.headSeal,
         },
+        currentBidCents: snapshot.lot.currentBidCents,
+        leaderId: snapshot.lot.leaderId,
+        auctioneerId: snapshot.lot.auctioneerId,
+        settledAt: snapshot.lot.settledAt,
         result: snapshot.lot.result,
         receipt: snapshot.receipt,
         debits: snapshot.debits,
+        credits: snapshot.credits,
       },
       this.secrets,
     );

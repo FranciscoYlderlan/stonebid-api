@@ -3,13 +3,13 @@ import { prisma } from './prisma-client.ts';
 import { isUuid, lotQuery, toLot } from './prisma-lots-repository.ts';
 
 /**
- * Leitura da auditoria (RF-60): lote, lances, comprovante e DEBIT do lote numa transação
+ * Leitura da auditoria (RF-60): lote, lances, comprovante e DEBIT/CREDIT do lote numa transação
  * `REPEATABLE READ`, para um lance que entra no meio não parecer adulteração da cabeça.
  */
 export class PrismaLotAuditReader implements LotAuditReader {
   async load(lotId: string): Promise<LotAuditSnapshot | null> {
     if (!isUuid(lotId)) return null;
-    const [lot, bids, receipt, debits] = await prisma.$transaction(
+    const [lot, bids, receipt, movements] = await prisma.$transaction(
       [
         prisma.lot.findUnique({ where: { id: lotId }, ...lotQuery }),
         prisma.bid.findMany({
@@ -27,14 +27,18 @@ export class PrismaLotAuditReader implements LotAuditReader {
         }),
         prisma.receipt.findUnique({ where: { lotId } }),
         prisma.walletMovement.findMany({
-          where: { lotId, type: 'DEBIT' },
+          where: { lotId, type: { in: ['DEBIT', 'CREDIT'] } },
           orderBy: { seq: 'asc' },
-          select: { userId: true, amountCents: true },
+          select: { type: true, userId: true, amountCents: true },
         }),
       ],
       { isolationLevel: 'RepeatableRead' },
     );
     if (!lot) return null;
+    const only = (type: 'DEBIT' | 'CREDIT') =>
+      movements
+        .filter((movement) => movement.type === type)
+        .map(({ userId, amountCents }) => ({ userId, amountCents }));
     return {
       lot: toLot(lot),
       bids,
@@ -50,7 +54,8 @@ export class PrismaLotAuditReader implements LotAuditReader {
             seal: receipt.seal,
           }
         : null,
-      debits,
+      debits: only('DEBIT'),
+      credits: only('CREDIT'),
     };
   }
 }
