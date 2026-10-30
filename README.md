@@ -154,6 +154,14 @@ Recusas (RF-70), todas com mensagem em português:
 
 Qualquer pessoa recalcula a cadeia de hashes a partir do histórico público; só o selo exige o servidor. Trocar o licitante de um lance no banco muda o pseudônimo e quebra o hash. Limite: quem tiver o banco **e** o `SEAL_SECRET`, ou um backup antigo com uma cabeça anterior, ainda forja o histórico; só uma âncora externa resolveria. Trocar `SEAL_SECRET` invalida os selos gravados; trocar `PSEUDONYM_SECRET` muda os pseudônimos e quebra os hashes gravados.
 
+## Tempo real (SSE)
+
+`GET /lots/:id/events` (público) é um stream [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events): ao conectar chega `event: snapshot`; depois `event: bid` (lance aceito, já com o `endsAt` prorrogado), `event: canceled` e `event: settled`. O `data` de todo evento é `{ "serverTime": ISO, "lot": lot }`, o mesmo `lot` do `GET /lots/:id`, sem dado de quem assiste (o `EventSource` não manda autenticação). Um comentário `: ping` a cada 15 s mantém a conexão viva. Lote inexistente: 404 `LOT_NOT_FOUND` em JSON. Cabeçalhos: `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`, CORS igual ao resto da API.
+
+- **Como publica:** o caso de uso chama a porta `LotEventsPublisher.publish(lotId, type)` (`src/application/lot-events-publisher.ts`) **depois do COMMIT**; o barramento em memória (`src/infra/events/`) relê o lote do banco uma vez e entrega o mesmo evento a todos os inscritos. Ao fechar a conexão, o listener sai.
+- **Uma instância:** o barramento vive no processo, por isso o Cloud Run roda com `--max-instances=1` (produção e staging, no `cd.yml`). Mais instâncias exigem outro barramento (`LISTEN/NOTIFY` ou pub/sub).
+- **Plano B:** se o stream cair, o `EventSource` reconecta sozinho e o web volta à recarga periódica do `GET /lots/:id` a cada 3 s enquanto o stream estiver fora. O `--timeout=3600` do Cloud Run fecha o stream após 60 min; a reconexão traz um `snapshot` novo.
+
 ### API externa de itens (Art Institute of Chicago)
 
 Só a busca do painel (`GET /items/search`), a miniatura da busca (`GET /items/images/:imageId/thumbnail`) e a criação do lote chamam a API. Ao criar o lote, título, atributos e **a imagem** são copiados para o PostgreSQL; vitrine, detalhe e imagem nunca chamam a API, então seguem de pé se ela cair.
@@ -214,9 +222,10 @@ As tools chamam as rotas reais com `app.inject()` (validação, auth e erros de 
 ```
 src/
 ├── domain/              # entidades, interfaces de repositório e do catálogo de itens, erros de negócio
-├── application/use-cases/
+├── application/         # use-cases/ e portas da aplicação (ex.: LotEventsPublisher)
 ├── infra/
 │   ├── http/            # controllers, routes, middlewares, schemas, errors
+│   ├── events/          # barramento em memória do tempo real (SSE)
 │   ├── mcp/             # plugin /mcp, sessão, tools
 │   ├── external/        # adaptador da API de itens (Art Institute of Chicago)
 │   ├── repositories/    # Prisma (cliente gerado em repositories/prisma/generated/, fora do git)
