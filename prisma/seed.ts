@@ -1,14 +1,17 @@
 /**
  * Seed reexecutável (RNF-02), sem rede: cria ou atualiza com upsert os usuários de teste,
  * dá aos licitantes um depósito inicial com chave de idempotência fixa (não duplica ao rodar
- * de novo) e cria três lotes do leiloeiro (ao vivo, agendado e encerrado), com imagens de
- * prisma/seed-assets/.
+ * de novo), cria três lotes do leiloeiro (ao vivo, agendado e encerrado), com imagens de
+ * prisma/seed-assets/, e dá três lances no lote ao vivo pelo caso de uso real (hash, selo,
+ * saldo comprometido e devolvido), com chaves de idempotência fixas.
  */
 import { readFile } from 'node:fs/promises';
 import { hashPassword } from '../src/application/password-hashing.ts';
 import type { ItemAttributes } from '../src/domain/entities/item.ts';
 import type { Role } from '../src/domain/entities/user.ts';
+import { AppError } from '../src/domain/errors/app-error.ts';
 import { env } from '../src/env/index.ts';
+import { makePlaceBidUseCase } from '../src/infra/factories/make-place-bid-use-case.ts';
 import { prisma } from '../src/infra/repositories/prisma/prisma-client.ts';
 
 const seedUsers: { name: string; email: string; role: Role }[] = [
@@ -94,6 +97,13 @@ const seedLots: SeedLot[] = [
   },
 ];
 
+/** Lances do lote ao vivo (seed-1: inicial R$ 500,00, incremento R$ 50,00), em ordem. */
+const seedBids: { key: string; email: string; amountCents: number }[] = [
+  { key: 'seed-bid-1', email: 'licitante-1@stonebid.dev', amountCents: 50_000 },
+  { key: 'seed-bid-2', email: 'licitante-2@stonebid.dev', amountCents: 55_000 },
+  { key: 'seed-bid-3', email: 'licitante-1@stonebid.dev', amountCents: 60_000 },
+];
+
 async function main(): Promise<void> {
   if (!env.SEED_PASSWORD) throw new Error('Defina SEED_PASSWORD para rodar o seed.');
   const passwordHash = await hashPassword(env.SEED_PASSWORD);
@@ -151,6 +161,29 @@ async function main(): Promise<void> {
       update: item,
     });
     console.log(`seed: lote ${lot.externalId} (${lot.title})`);
+  }
+
+  // Pelo caso de uso: a mesma regra, a mesma cadeia de hash e o mesmo extrato da API. Rodar de
+  // novo repete a chave e devolve o lance já gravado (RN-18), sem lance novo.
+  const placeBid = makePlaceBidUseCase();
+  const liveLot = seedLots[0]!;
+  for (const seedBid of seedBids) {
+    const bidder = await prisma.user.findUniqueOrThrow({ where: { email: seedBid.email } });
+    try {
+      const { bid, created } = await placeBid.execute({
+        lotId: liveLot.id,
+        bidderId: bidder.id,
+        amountCents: seedBid.amountCents,
+        idempotencyKey: seedBid.key,
+      });
+      console.log(
+        `seed: lance ${bid.seq} no ${liveLot.externalId} (${bid.pseudonym}, ${created ? 'criado' : 'já existia'})`,
+      );
+    } catch (error) {
+      // Lote já encerrado ou com lances maiores (ambiente com uso real): o seed não força.
+      if (!(error instanceof AppError)) throw error;
+      console.log(`seed: lance ${seedBid.key} pulado (${error.code}: ${error.message})`);
+    }
   }
 }
 

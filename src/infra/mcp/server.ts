@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { FastifyInstance } from 'fastify';
 import type { McpSessionState } from './session.ts';
 import { registerAuthTools } from './tools/auth-tools.ts';
+import { registerBidsTools } from './tools/bids-tools.ts';
 import { registerHealthTools } from './tools/health-tools.ts';
 import { registerItemsTools } from './tools/items-tools.ts';
 import { registerLotsTools } from './tools/lots-tools.ts';
@@ -18,6 +19,7 @@ export function createMcpServer(app: FastifyInstance, state: McpSessionState): M
   registerWalletTools(server, app, state);
   registerItemsTools(server, app, state);
   registerLotsTools(server, app, state);
+  registerBidsTools(server, app, state);
 
   return server;
 }

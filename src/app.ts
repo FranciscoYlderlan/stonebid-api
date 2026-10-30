@@ -12,6 +12,7 @@ import {
   TooManyRequestsError,
 } from './infra/http/errors/too-many-requests-error.ts';
 import { authRoutes } from './infra/http/routes/auth-routes.ts';
+import { bidsRoutes } from './infra/http/routes/bids-routes.ts';
 import { healthRoutes } from './infra/http/routes/health-routes.ts';
 import { itemsRoutes } from './infra/http/routes/items-routes.ts';
 import { lotsRoutes } from './infra/http/routes/lots-routes.ts';
@@ -83,6 +84,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const bidsReader = options.lotBidsReader ?? new PrismaLotBidsReader();
   await app.register(itemsRoutes, { catalog, bidsReader });
   await app.register(lotsRoutes, { catalog, bidsReader });
+  await app.register(bidsRoutes);
 
   if (options.mcpEnabled ?? env.MCP_ENABLED) {
     await app.register(mcpPlugin);
