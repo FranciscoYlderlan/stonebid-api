@@ -269,6 +269,11 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
         endsAt: expect.any(String),
         status: 'LIVE',
         canceledAt: null,
+        cancelReason: null,
+        result: null,
+        settledAt: null,
+        receiptPublicId: null,
+        viewer: null,
       });
       expect(response.body).not.toContain(auctioneerA.id);
 
@@ -287,6 +292,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
         method: 'POST',
         url: `/lots/${response.json().id}/cancel`,
         headers: auth(auctioneerA.token),
+        payload: { reason: 'Motivo de teste' },
       });
     });
 
@@ -392,7 +398,12 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
 
   describe('uma obra, um lote vivo (RN-19)', () => {
     const cancel = (id: string, token = auctioneerA.token) =>
-      app.inject({ method: 'POST', url: `/lots/${id}/cancel`, headers: auth(token) });
+      app.inject({
+        method: 'POST',
+        url: `/lots/${id}/cancel`,
+        headers: auth(token),
+        payload: { reason: 'Motivo de teste' },
+      });
 
     it('agendado prende a obra para qualquer leiloeiro → 409 ITEM_ALREADY_AUCTIONED, sem chamar a API', async () => {
       const externalId = uniqueExternalId();
@@ -593,6 +604,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
         method: 'POST',
         url: `/lots/${canceled.id}/cancel`,
         headers: auth(auctioneerA.token),
+        payload: { reason: 'Motivo de teste' },
       });
       const endedOld = await insertEndedLot(auctioneerA.id, 2 * HOUR);
       const endedRecent = await insertEndedLot(auctioneerA.id, MINUTE);
@@ -714,6 +726,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
           method: 'POST',
           url: `/lots/${lot.id}/cancel`,
           headers: auth(auctioneerA.token),
+          payload: { reason: 'Motivo de teste' },
         });
         expect(response.statusCode).toBe(200);
         expect(response.json()).toMatchObject({ id: lot.id, status: 'CANCELED' });
@@ -727,6 +740,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
         method: 'POST',
         url: `/lots/${live.id}/cancel`,
         headers: auth(auctioneerA.token),
+        payload: { reason: 'Motivo de teste' },
       });
       expect(again.statusCode).toBe(409);
       expect(again.json().error).toEqual({
@@ -741,11 +755,13 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
         method: 'POST',
         url: `/lots/${ended.id}/cancel`,
         headers: auth(auctioneerA.token),
+        payload: { reason: 'Motivo de teste' },
       });
       expect(response.statusCode).toBe(409);
-      expect(response.json().error.message).toBe(
-        'O lote já foi encerrado e não pode ser cancelado.',
-      );
+      expect(response.json().error).toEqual({
+        code: 'LOT_ENDED',
+        message: 'O lote já foi encerrado e não pode ser cancelado.',
+      });
     });
 
     it('leiloeiro B não cancela lote do A (403) e licitante também não; inexistente → 404', async () => {
@@ -755,6 +771,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
         method: 'POST',
         url: `/lots/${lot.id}/cancel`,
         headers: auth(auctioneerB.token),
+        payload: { reason: 'Motivo de teste' },
       });
       expect(byB.statusCode).toBe(403);
       expect(byB.json().error.code).toBe('FORBIDDEN');
@@ -763,6 +780,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
         method: 'POST',
         url: `/lots/${lot.id}/cancel`,
         headers: auth(bidder.token),
+        payload: { reason: 'Motivo de teste' },
       });
       expect(byBidder.statusCode).toBe(403);
 
@@ -770,6 +788,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
         method: 'POST',
         url: '/lots/00000000-0000-4000-8000-000000000000/cancel',
         headers: auth(auctioneerA.token),
+        payload: { reason: 'Motivo de teste' },
       });
       expect(missing.statusCode).toBe(404);
 
@@ -784,6 +803,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
         method: 'POST',
         url: `/lots/${mineCanceled.id}/cancel`,
         headers: auth(auctioneerB.token),
+        payload: { reason: 'Motivo de teste' },
       });
       const others = (await createLot(auctioneerA.token)).json();
 

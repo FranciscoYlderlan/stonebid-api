@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 /**
  * Cadeia de hash dos lances e selos (M-12, decisão "comprovante e hash").
@@ -60,6 +60,39 @@ export function sealHead(secret: string, lotId: string, seq: number, hash: strin
   return seal(secret, 'head:v1', lotId, seq, hash);
 }
 
+/** Campos selados do comprovante (M-12), na ordem fixa do selo. */
+export interface ReceiptSealFields {
+  publicId: string;
+  lotId: string;
+  winnerPseudonym: string;
+  amountCents: number;
+  settledAt: Date;
+  bidCount: number;
+  finalHash: string;
+}
+
+/** Selo do comprovante: `HMAC(segredo, "receipt:v1" + todos os campos)`, data em milissegundos. */
+export function sealReceipt(secret: string, fields: ReceiptSealFields): string {
+  return seal(
+    secret,
+    'receipt:v1',
+    fields.publicId,
+    fields.lotId,
+    fields.winnerPseudonym,
+    fields.amountCents,
+    fields.settledAt.getTime(),
+    fields.bidCount,
+    fields.finalHash,
+  );
+}
+
+/** Identificador público do comprovante (RF-52): 16 bytes aleatórios em base64url (22 caracteres). */
+export function newReceiptPublicId(): string {
+  return randomBytes(16).toString('base64url');
+}
+
+export const RECEIPT_PUBLIC_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+
 /** Compara selos em tempo constante. */
 export function sameSeal(a: string, b: string): boolean {
   const left = Buffer.from(a, 'utf8');
@@ -67,13 +100,19 @@ export function sameSeal(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
+/** Dígitos hexadecimais do código do pseudônimo. */
+export const PSEUDONYM_DIGITS = 6;
+
 /**
  * Pseudônimo estável do licitante dentro do lote (RN-15, AD-09):
- * `HMAC-SHA256(segredo, "pseudonym:v1" + lotId + bidderId)`, cortado em 4 dígitos hexadecimais
- * maiúsculos. O mesmo licitante tem pseudônimos diferentes em lotes diferentes.
+ * `HMAC-SHA256(segredo, "pseudonym:v1" + lotId + bidderId)`, cortado em 6 dígitos hexadecimais
+ * maiúsculos ("Licitante 7F3A9C"; colisão no mesmo lote ~1 em 16 milhões).
+ * O mesmo licitante tem pseudônimos diferentes em lotes diferentes.
  */
 export function pseudonymFor(secret: string, lotId: string, bidderId: string): string {
-  const code = hmac(secret, `pseudonym:v1${lotId}${bidderId}`).slice(0, 4).toUpperCase();
+  const code = hmac(secret, `pseudonym:v1${lotId}${bidderId}`)
+    .slice(0, PSEUDONYM_DIGITS)
+    .toUpperCase();
   return `Licitante ${code}`;
 }
 

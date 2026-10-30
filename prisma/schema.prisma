@@ -81,6 +81,8 @@ model Lot {
   originalEndsAt    DateTime         @map("original_ends_at")
   endsAt            DateTime         @map("ends_at")
   canceledAt        DateTime?        @map("canceled_at")
+  /// Motivo do cancelamento (3 a 280 caracteres), gravado junto com `canceledAt`.
+  cancelReason      String?          @map("cancel_reason")
   createdAt         DateTime         @default(now()) @map("created_at")
   /// Lance atual e líder (RN-04, RN-07), atualizados na mesma transação do lance.
   currentBidCents   Int?             @map("current_bid_cents")
@@ -90,14 +92,44 @@ model Lot {
   headSeq           Int              @default(0) @map("head_seq")
   headHash          String?          @map("head_hash")
   headSeal          String?          @map("head_seal")
+  /// Liquidação (RN-11, AD-08): hora e resultado, gravados juntos uma vez só. Vencedor e valor final
+  /// são o `leaderId` e o `currentBidCents`, que congelam aqui.
+  settledAt         DateTime?        @map("settled_at") @db.Timestamptz(3)
+  result            LotResult?
   bids              Bid[]
   walletMovements   WalletMovement[]
+  receipt           Receipt?
 
   @@index([auctioneerId])
   @@index([endsAt])
   /// Lotes da obra: checagem da RN-19 na criação e situação da obra na busca.
   @@index([externalId])
   @@map("lots")
+}
+
+/// Resultado da liquidação do lote.
+enum LotResult {
+  SOLD
+  NO_WINNER
+}
+
+/// Comprovante (RF-51, RF-52, M-12): fotografia selada da liquidação de um lote arrematado. Sem
+/// dado pessoal (RN-15); item, resultado e link da auditoria derivam do lote.
+model Receipt {
+  id              String   @id @default(uuid()) @db.Uuid
+  /// 16 bytes aleatórios em base64url: o link compartilhável.
+  publicId        String   @unique @map("public_id")
+  lotId           String   @unique @map("lot_id") @db.Uuid
+  lot             Lot      @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  winnerPseudonym String   @map("winner_pseudonym")
+  amountCents     Int      @map("amount_cents")
+  settledAt       DateTime @map("settled_at") @db.Timestamptz(3)
+  bidCount        Int      @map("bid_count")
+  finalHash       String   @map("final_hash")
+  /// HMAC(segredo, "receipt:v1" + todos os campos acima).
+  seal            String
+
+  @@map("receipts")
 }
 
 /// Lance (RN-02 a RN-09, RN-14): só de inserção, encadeado por hash dentro do lote (M-12).

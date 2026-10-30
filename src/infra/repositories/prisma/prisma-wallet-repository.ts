@@ -20,6 +20,14 @@ export class PrismaWalletRepository implements WalletRepository {
     return totals;
   }
 
+  async sumSettlementCredits(userId: string): Promise<number> {
+    const sum = await prisma.walletMovement.aggregate({
+      where: { userId, type: 'CREDIT', lotId: { not: null } },
+      _sum: { amountCents: true },
+    });
+    return sum._sum.amountCents ?? 0;
+  }
+
   async listByUser(userId: string): Promise<WalletMovement[]> {
     return prisma.walletMovement.findMany({
       where: { userId },

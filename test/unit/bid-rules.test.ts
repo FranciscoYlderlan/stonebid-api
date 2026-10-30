@@ -102,12 +102,22 @@ describe('getCancelRefusal (RN-12, M-13, T-10a)', () => {
   });
 
   it('com lances (sem o OPC-2), encerrado, no instante do fim ou já cancelado: recusa com motivo', () => {
-    expect(getCancelRefusal({ ...lot, headSeq: 1 }, startsAt)).toBe(
-      'O lote já tem lances e não pode ser cancelado.',
-    );
-    expect(getCancelRefusal(lot, endsAt)).toBe('O lote já foi encerrado e não pode ser cancelado.');
-    expect(getCancelRefusal({ ...lot, canceledAt: startsAt }, startsAt)).toBe(
-      'O lote já está cancelado.',
-    );
+    expect(getCancelRefusal({ ...lot, headSeq: 1 }, startsAt)).toEqual({
+      code: 'LOT_NOT_CANCELABLE',
+      message: 'O lote já tem lances e não pode ser cancelado.',
+    });
+    const ended = {
+      code: 'LOT_ENDED',
+      message: 'O lote já foi encerrado e não pode ser cancelado.',
+    };
+    expect(getCancelRefusal(lot, endsAt)).toEqual(ended);
+    expect(getCancelRefusal({ ...lot, canceledAt: startsAt }, startsAt)).toEqual({
+      code: 'LOT_NOT_CANCELABLE',
+      message: 'O lote já está cancelado.',
+    });
+  });
+
+  it('liquidado: LOT_ENDED mesmo com relógio antes do fim', () => {
+    expect(getCancelRefusal({ ...lot, settledAt: endsAt }, startsAt)?.code).toBe('LOT_ENDED');
   });
 });

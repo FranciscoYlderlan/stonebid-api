@@ -4,12 +4,13 @@ import { PrismaBidsRepository } from '../repositories/prisma/prisma-bids-reposit
 import { PrismaWalletRepository } from '../repositories/prisma/prisma-wallet-repository.ts';
 import { makeLotEventsPublisher } from './make-lot-events-publisher.ts';
 
-export function makePlaceBidUseCase(): PlaceBidUseCase {
+/** `clock` só para o seed (lote encerrado com lances dados no passado). */
+export function makePlaceBidUseCase(clock?: () => Date): PlaceBidUseCase {
   return new PlaceBidUseCase(
     new PrismaBidsRepository(),
     new PrismaWalletRepository(),
     { sealSecret: env.SEAL_SECRET, pseudonymSecret: env.PSEUDONYM_SECRET },
-    undefined,
+    clock,
     makeLotEventsPublisher(),
   );
 }

@@ -220,6 +220,39 @@ describe('GET /lots/:id/events (SSE)', () => {
     stream.close();
   });
 
+  it('a liquidação (na leitura) gera o evento settled uma vez, com result e comprovante', async () => {
+    const lotId = await createLot();
+    const placed = await app.inject({
+      method: 'POST',
+      url: `/lots/${lotId}/bids`,
+      headers: { ...auth(ana.token), 'idempotency-key': randomUUID() },
+      payload: { amountCents: 10_000 },
+    });
+    expect(placed.statusCode).toBe(201);
+    const stream = await openStream(baseUrl, `/lots/${lotId}/events`);
+    expect((await stream.next()).event).toBe('snapshot');
+
+    // O lote vence; a leitura liquida (AD-08) e só essa liquidação publica.
+    await prisma.lot.update({
+      where: { id: lotId },
+      data: { endsAt: new Date(Date.now() - 1_000) },
+    });
+    await app.inject({ method: 'GET', url: `/lots/${lotId}` });
+    await app.inject({ method: 'GET', url: `/lots/${lotId}` });
+
+    const event = await stream.next();
+    expect(event.event).toBe('settled');
+    expect(event.data.lot).toMatchObject({
+      id: lotId,
+      status: 'ENDED',
+      result: 'SOLD',
+      receiptPublicId: expect.any(String),
+      viewer: null,
+    });
+    await expect(stream.next(300)).rejects.toThrow();
+    stream.close();
+  });
+
   it('remove o listener quando a conexão fecha', async () => {
     const lotId = await createLot();
     const first = await openStream(baseUrl, `/lots/${lotId}/events`);

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CANCEL_REASON_MAX, CANCEL_REASON_MIN } from '../../../domain/entities/lot.ts';
 import { IMAGE_ID_PATTERN } from '../../external/artic-item-catalog.ts';
 
 /** Teto de centavos: cabe no INTEGER do PostgreSQL (R$ 20 milhões). */
@@ -33,6 +34,22 @@ export const createLotBodySchema = z.object(
   },
   'Envie os dados do lote no corpo da requisição, em JSON.',
 );
+
+/** Corpo do cancelamento: motivo obrigatório (decisão "motivo do cancelamento gravado"). */
+export const cancelLotBodySchema = z.object(
+  {
+    reason: z
+      .string('Informe o motivo do cancelamento.')
+      .trim()
+      .min(CANCEL_REASON_MIN, `O motivo precisa ter pelo menos ${CANCEL_REASON_MIN} caracteres.`)
+      .max(CANCEL_REASON_MAX, `O motivo aceita até ${CANCEL_REASON_MAX} caracteres.`),
+  },
+  'Envie o motivo do cancelamento no corpo: { reason }.',
+);
+
+export const receiptParamsSchema = z.object({
+  publicId: z.string('Informe o comprovante.').min(1, 'Informe o comprovante.'),
+});
 
 export const lotIdParamsSchema = z.object({
   id: z.string('Informe o id do lote.').min(1, 'Informe o id do lote.'),

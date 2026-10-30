@@ -43,18 +43,29 @@ export function registerLotsTools(
     'lots_get',
     {
       title: 'Detalhe do lote',
-      description: 'GET /lots/:id: lote público com o estado pelo relógio do servidor.',
+      description:
+        'GET /lots/:id: lote público com o estado pelo relógio do servidor (lote vencido é ' +
+        'liquidado na leitura: result SOLD ou NO_WINNER, receiptPublicId). Com licitante na ' +
+        'sessão, lot.viewer.pseudonym traz o pseudônimo dele no lote.',
       inputSchema: lotIdInput,
     },
     async ({ id }) =>
-      toToolResult(await callRoute(app, { method: 'GET', url: `/lots/${encodeURIComponent(id)}` })),
+      toToolResult(
+        await callRoute(app, {
+          method: 'GET',
+          url: `/lots/${encodeURIComponent(id)}`,
+          token: state.token,
+        }),
+      ),
   );
 
   server.registerTool(
     'auctioneer_lots',
     {
       title: 'Meus lotes (leiloeiro)',
-      description: 'GET /auctioneer/lots: lotes do leiloeiro da sessão, inclusive cancelados.',
+      description:
+        'GET /auctioneer/lots: lotes do leiloeiro da sessão, inclusive cancelados, e ' +
+        'totalReceivedCents (soma do que recebeu nas liquidações).',
     },
     async () =>
       toToolResult(
@@ -63,18 +74,48 @@ export function registerLotsTools(
   );
 
   server.registerTool(
+    'receipts_get',
+    {
+      title: 'Comprovante',
+      description:
+        'GET /receipts/:publicId: comprovante público do lote arrematado (título, valor final, ' +
+        'data, pseudônimo do vencedor, hash final e auditPath), sem dado pessoal. Inexistente ou ' +
+        'adulterado → 404 RECEIPT_NOT_FOUND.',
+      inputSchema: {
+        publicId: z
+          .string()
+          .min(1)
+          .describe('identificador público do comprovante (22 caracteres)'),
+      },
+    },
+    async ({ publicId }) =>
+      toToolResult(
+        await callRoute(app, {
+          method: 'GET',
+          url: `/receipts/${encodeURIComponent(publicId)}`,
+        }),
+      ),
+  );
+
+  server.registerTool(
     'lots_cancel',
     {
       title: 'Cancelar lote',
       description:
-        'POST /lots/:id/cancel: cancela um lote agendado ou ao vivo, sem lances. Só o leiloeiro dono.',
-      inputSchema: lotIdInput,
+        'POST /lots/:id/cancel com { reason }: cancela um lote agendado ou ao vivo, sem lances. Só ' +
+        'o leiloeiro dono. Motivo de 3 a 280 caracteres (senão 422 VALIDATION_ERROR); encerrado ' +
+        'ou liquidado → 409 LOT_ENDED; com lances ou já cancelado → 409 LOT_NOT_CANCELABLE.',
+      inputSchema: {
+        ...lotIdInput,
+        reason: z.string().describe('motivo do cancelamento (3 a 280 caracteres)'),
+      },
     },
-    async ({ id }) =>
+    async ({ id, reason }) =>
       toToolResult(
         await callRoute(app, {
           method: 'POST',
           url: `/lots/${encodeURIComponent(id)}/cancel`,
+          body: { reason },
           token: state.token,
         }),
       ),
