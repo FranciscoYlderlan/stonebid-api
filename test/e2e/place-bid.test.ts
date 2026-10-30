@@ -184,7 +184,7 @@ describe('núcleo do lance (RF-33, RN-02 a RN-09)', () => {
       seq: 1,
       lotId,
       amountCents: 10_000,
-      pseudonym: expect.stringMatching(/^Licitante [0-9A-F]{4}$/),
+      pseudonym: expect.stringMatching(/^Licitante [0-9A-F]{6}$/),
       createdAt: expect.any(Date),
     });
     expect(result.lot).toMatchObject({ currentBidCents: 10_000, leaderId: ana, headSeq: 1 });
@@ -466,12 +466,12 @@ describe('cancelamento × lance (T-10a, M-13)', () => {
     const lotId = await createLot();
     const ana = await createUser('BIDDER', 100_000);
     await placeBid().execute(bid(lotId, ana, 10_000));
-    await expect(cancelLot().execute({ lotId, auctioneerId: auctioneerId! })).rejects.toMatchObject(
-      {
-        code: 'LOT_NOT_CANCELABLE',
-        message: 'O lote já tem lances e não pode ser cancelado.',
-      },
-    );
+    await expect(
+      cancelLot().execute({ lotId, auctioneerId: auctioneerId!, reason: 'Motivo de teste' }),
+    ).rejects.toMatchObject({
+      code: 'LOT_NOT_CANCELABLE',
+      message: 'O lote já tem lances e não pode ser cancelado.',
+    });
     expect(await new PrismaLotBidsReader().hasBids(lotId)).toBe(true);
   });
 
@@ -481,7 +481,7 @@ describe('cancelamento × lance (T-10a, M-13)', () => {
       const lotId = await createLot();
       const [bidOutcome, cancelOutcome] = await Promise.allSettled([
         placeBid(new SlowBidsRepository()).execute(bid(lotId, ana, 10_000)),
-        cancelLot().execute({ lotId, auctioneerId: auctioneerId! }),
+        cancelLot().execute({ lotId, auctioneerId: auctioneerId!, reason: 'Motivo de teste' }),
       ]);
       const lot = await prisma.lot.findUniqueOrThrow({ where: { id: lotId } });
       if (bidOutcome.status === 'fulfilled') {
@@ -511,7 +511,11 @@ describe('cancelamento × lance (T-10a, M-13)', () => {
     // O lance segura a trava pela janela; o cancelamento chega depois e espera.
     const pending = placeBid(new SlowBidsRepository()).execute(bid(lotId, ana, 10_000));
     await sleep(RACE_WINDOW_MS / 3);
-    const cancel = cancelLot().execute({ lotId, auctioneerId: auctioneerId! });
+    const cancel = cancelLot().execute({
+      lotId,
+      auctioneerId: auctioneerId!,
+      reason: 'Motivo de teste',
+    });
     const [bidOutcome, cancelOutcome] = await Promise.allSettled([pending, cancel]);
     expect(bidOutcome).toMatchObject({ status: 'fulfilled', value: { created: true } });
     expect(cancelOutcome).toMatchObject({

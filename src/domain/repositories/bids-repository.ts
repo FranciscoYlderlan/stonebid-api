@@ -30,6 +30,8 @@ export interface NewBid {
   hash: string;
   seal: string;
   headSeal: string;
+  /** Fim do lote depois do lance: igual ao atual ou prorrogado pelo anti-sniping (RN-10). */
+  endsAt: Date;
 }
 
 /**
@@ -49,10 +51,20 @@ export interface BidsRepository {
   /**
    * RN-09: numa transação, trava a linha do lote (`FOR UPDATE`) e a carteira do licitante, lê o
    * estado e chama `plan`. Lance novo: grava o lance, o COMMIT do novo líder, o RELEASE do antigo
-   * e atualiza o lance atual, o líder e a cabeça da cadeia no lote. Devolve `null` se o lote não
+   * e atualiza o lance atual, o líder, a cabeça da cadeia e o fim (anti-sniping) no lote. Devolve `null` se o lote não
    * existe.
    */
   place(request: PlaceBidRequest, plan: PlanBid): Promise<PlaceBidResult | null>;
   /** Lances do lote, do mais novo para o mais antigo (seq decrescente). */
   listByLot(lotId: string): Promise<Bid[]>;
+  /** Lotes em que o licitante deu lance, com o maior lance dele, do lance mais recente ao mais antigo. */
+  listLotsByBidder(bidderId: string): Promise<BidderLotSummary[]>;
+}
+
+export interface BidderLotSummary {
+  lotId: string;
+  /** Maior lance do licitante no lote. */
+  maxAmountCents: number;
+  /** Hora do lance mais recente do licitante no lote. */
+  lastBidAt: Date;
 }

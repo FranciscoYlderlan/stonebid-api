@@ -93,7 +93,7 @@ describe('lances pela API (RF-33, RF-70, T-08, T-09)', () => {
       seq: 1,
       lotId,
       amountCents: 10_000,
-      pseudonym: expect.stringMatching(/^Licitante [0-9A-F]{4}$/),
+      pseudonym: expect.stringMatching(/^Licitante [0-9A-F]{6}$/),
       createdAt: expect.any(String),
     });
     expect(body.lot).toMatchObject({
@@ -305,6 +305,7 @@ describe('lances pela API (RF-33, RF-70, T-08, T-09)', () => {
       method: 'POST',
       url: `/lots/${lotId}/cancel`,
       headers: auth(auctioneer.token),
+      payload: { reason: 'Obra retirada pelo dono' },
     });
     expect(response.statusCode).toBe(409);
     expect(response.json().error).toEqual({

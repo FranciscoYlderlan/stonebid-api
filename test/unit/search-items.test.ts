@@ -38,6 +38,10 @@ function lot(id: string, externalId: string, startsAt: string, endsAt: string): 
     headSeq: 0,
     headHash: null,
     headSeal: null,
+    cancelReason: null,
+    settledAt: null,
+    result: null,
+    receiptPublicId: null,
   };
 }
 

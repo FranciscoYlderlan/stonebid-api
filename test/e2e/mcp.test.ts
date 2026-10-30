@@ -77,6 +77,7 @@ describe('camada MCP (/mcp)', () => {
       'auth_me',
       'auth_register',
       'bids_list',
+      'bids_mine',
       'bids_place',
       'entrar',
       'health',
@@ -85,6 +86,7 @@ describe('camada MCP (/mcp)', () => {
       'lots_create',
       'lots_get',
       'lots_list',
+      'receipts_get',
       'wallet_deposit',
       'wallet_get',
       'wallet_movements',
@@ -236,12 +238,15 @@ describe('camada MCP: tools de itens e lotes', () => {
     expect((mine.body.items as { id: string }[]).map((lot) => lot.id)).toContain(id);
 
     await call('entrar', { user: 'licitante-1' });
-    const forbidden = await client.callTool({ name: 'lots_cancel', arguments: { id } });
+    const forbidden = await client.callTool({
+      name: 'lots_cancel',
+      arguments: { id, reason: 'Motivo de teste' },
+    });
     expect(forbidden.isError).toBe(true);
     expect(payloadOf(forbidden).status).toBe(403);
 
     await call('entrar', { user: 'leiloeiro' });
-    const canceled = await call('lots_cancel', { id });
+    const canceled = await call('lots_cancel', { id, reason: 'Obra retirada' });
     expect(canceled).toMatchObject({ status: 200, body: { id, status: 'CANCELED' } });
 
     await client.close();
@@ -335,10 +340,113 @@ describe('camada MCP: tools de lances', () => {
       {
         seq: 1,
         amountCents: 1_000,
-        pseudonym: expect.stringMatching(/^Licitante [0-9A-F]{4}$/),
+        pseudonym: expect.stringMatching(/^Licitante [0-9A-F]{6}$/),
         createdAt: expect.any(String),
       },
     ]);
+
+    await client.close();
+  });
+});
+
+describe('camada MCP: tools do I3 (comprovante, meus lances, total, cancelamento com motivo)', () => {
+  let app: FastifyInstance;
+  let mcpUrl: URL;
+
+  beforeAll(async () => {
+    app = await buildApp({ mcpEnabled: true });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as AddressInfo;
+    mcpUrl = new URL(`http://127.0.0.1:${port}/mcp`);
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await prisma.$disconnect();
+  });
+
+  it('receipts_get, bids_mine, auctioneer_lots com total e lots_cancel exigindo reason', async () => {
+    const client = new Client({ name: 'stonebid-e2e', version: '0.0.0' });
+    await client.connect(
+      new StreamableHTTPClientTransport(mcpUrl, {
+        requestInit: { headers: { 'x-api-key': testEnv.MCP_API_KEY } },
+      }),
+    );
+    const call = async (name: string, args: Record<string, unknown> = {}) =>
+      payloadOf(await client.callTool({ name, arguments: args }));
+
+    // O seed deixa o seed-3 liquidado, com comprovante (licitante-2 vence).
+    const seeded = await call('lots_get', { id: '5eed0000-0000-4000-8000-000000000003' });
+    expect(seeded).toMatchObject({
+      status: 200,
+      body: { lot: { status: 'ENDED', result: 'SOLD', viewer: null } },
+    });
+    const publicId = (seeded.body.lot as { receiptPublicId: string }).receiptPublicId;
+    const receipt = await call('receipts_get', { publicId });
+    expect(receipt).toMatchObject({
+      status: 200,
+      body: {
+        receipt: {
+          publicId,
+          finalAmountCents: 35_000,
+          winnerPseudonym: expect.stringMatching(/^Licitante [0-9A-F]{6}$/),
+          auditPath: '/lots/5eed0000-0000-4000-8000-000000000003/audit',
+        },
+      },
+    });
+    expect((await call('receipts_get', { publicId: 'AAAAAAAAAAAAAAAAAAAAAA' })).status).toBe(404);
+
+    await call('entrar', { user: 'licitante-2' });
+    const mine = await call('bids_mine');
+    expect(mine.status).toBe(200);
+    const won = (
+      mine.body.items as { lot: { id: string }; position: string; receiptPublicId: string }[]
+    ).find((item) => item.lot.id === '5eed0000-0000-4000-8000-000000000003');
+    expect(won).toMatchObject({
+      position: 'WON',
+      receiptPublicId: publicId,
+      myMaxBidCents: 35_000,
+    });
+    // Licitante logado: lots_get traz o pseudônimo dele (o vencedor do seed-3).
+    const asWinner = await call('lots_get', { id: '5eed0000-0000-4000-8000-000000000003' });
+    const winnerLot = asWinner.body.lot as {
+      viewer: { pseudonym: string };
+      leaderPseudonym: string;
+    };
+    expect(winnerLot.viewer.pseudonym).toBe(winnerLot.leaderPseudonym);
+
+    await call('entrar', { user: 'leiloeiro' });
+    const lots = await call('auctioneer_lots');
+    expect(lots.status).toBe(200);
+    expect(lots.body.totalReceivedCents).toEqual(expect.any(Number));
+    expect(lots.body.totalReceivedCents as number).toBeGreaterThanOrEqual(35_000);
+    expect((await call('bids_mine')).status).toBe(403);
+
+    const auctioneer = await prisma.user.findUniqueOrThrow({
+      where: { email: 'leiloeiro@stonebid.dev' },
+    });
+    const lot = await prisma.lot.create({
+      data: {
+        auctioneerId: auctioneer.id,
+        externalId: `cancel-mcp-${randomUUID()}`,
+        title: 'Lote MCP cancelamento',
+        attributes: {},
+        imageData: new Uint8Array(MOCK_IMAGE),
+        imageContentType: 'image/png',
+        startingBidCents: 1_000,
+        minIncrementCents: 100,
+        startsAt: new Date(Date.now() + 60 * 60 * 1000),
+        originalEndsAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+        endsAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+      },
+    });
+    const short = await call('lots_cancel', { id: lot.id, reason: 'x' });
+    expect(short).toMatchObject({ status: 422, body: { error: { code: 'VALIDATION_ERROR' } } });
+    const canceled = await call('lots_cancel', { id: lot.id, reason: 'Obra retirada' });
+    expect(canceled).toMatchObject({
+      status: 200,
+      body: { status: 'CANCELED', cancelReason: 'Obra retirada' },
+    });
 
     await client.close();
   });

@@ -3,9 +3,12 @@ import { makeListAuctioneerLotsUseCase } from '../../../factories/make-list-auct
 import { toLotDto } from '../../presenters/lot-presenter.ts';
 
 export async function listAuctioneerLotsController(request: FastifyRequest, reply: FastifyReply) {
-  const { lots, now } = await makeListAuctioneerLotsUseCase().execute(request.user.sub);
+  const { lots, totalReceivedCents, now } = await makeListAuctioneerLotsUseCase().execute(
+    request.user.sub,
+  );
   return reply.status(200).send({
     serverTime: now.toISOString(),
     items: lots.map((lot) => toLotDto(lot, now)),
+    totalReceivedCents,
   });
 }

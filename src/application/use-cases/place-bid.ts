@@ -1,5 +1,5 @@
 import { type PublicBid, validateBid } from '../../domain/entities/bid.ts';
-import type { Lot } from '../../domain/entities/lot.ts';
+import { extendEndsAt, type Lot } from '../../domain/entities/lot.ts';
 import { computeBalance, type WalletBalance } from '../../domain/entities/wallet.ts';
 import { BidRejectedError } from '../../domain/errors/bid-rejected-error.ts';
 import { ForbiddenError } from '../../domain/errors/forbidden-error.ts';
@@ -41,9 +41,9 @@ export interface PlaceBidOutput {
 /**
  * Dá um lance (RF-33, RN-02 a RN-09, RN-14, RN-18). Tudo numa transação, com o lote e a
  * carteira do licitante travados: valida, grava o lance encadeado por hash, compromete o
- * valor do novo líder, devolve o do antigo e atualiza o lance atual, o líder e a cabeça da
- * cadeia. Dois lances no mesmo lote passam um de cada vez; o segundo é revalidado contra o
- * lance que o primeiro gravou.
+ * valor do novo líder, devolve o do antigo e atualiza o lance atual, o líder, a cabeça da
+ * cadeia e o fim do lote (anti-sniping, RN-10). Dois lances no mesmo lote passam um de cada
+ * vez; o segundo é revalidado contra o lance que o primeiro gravou.
  */
 export class PlaceBidUseCase {
   constructor(
@@ -124,6 +124,8 @@ export class PlaceBidUseCase {
       hash,
       seal: sealBid(this.secrets.sealSecret, hash),
       headSeal: sealHead(this.secrets.sealSecret, lot.id, seq, hash),
+      // Anti-sniping (RN-10): 120 000 ms ou menos até o fim → max(fim, agora + 2 min).
+      endsAt: extendEndsAt(lot.endsAt, now),
     };
   }
 }

@@ -7,6 +7,7 @@ import { getLotController } from '../controllers/lots/get-lot-controller.ts';
 import { getLotImageController } from '../controllers/lots/get-lot-image-controller.ts';
 import { listAuctioneerLotsController } from '../controllers/lots/list-auctioneer-lots-controller.ts';
 import { listLotsController } from '../controllers/lots/list-lots-controller.ts';
+import { getReceiptController } from '../controllers/receipts/get-receipt-controller.ts';
 import { requireRole } from '../middlewares/require-role.ts';
 
 export interface LotsRoutesOptions {
@@ -14,13 +15,14 @@ export interface LotsRoutesOptions {
   bidsReader: LotBidsReader;
 }
 
-/** Rotas públicas (vitrine, lote, imagem) nunca chamam a API de itens (RN-13). */
+/** Rotas públicas (vitrine, lote, imagem, comprovante) nunca chamam a API de itens (RN-13). */
 export async function lotsRoutes(app: FastifyInstance, options: LotsRoutesOptions): Promise<void> {
   const auctioneerOnly = { preHandler: requireRole('AUCTIONEER') };
 
   app.get('/lots', listLotsController);
   app.get('/lots/:id', getLotController);
   app.get('/lots/:id/image', getLotImageController);
+  app.get('/receipts/:publicId', getReceiptController);
 
   app.post('/lots', auctioneerOnly, createLotController(options.catalog, options.bidsReader));
   app.post('/lots/:id/cancel', auctioneerOnly, cancelLotController);
