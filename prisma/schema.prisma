@@ -20,6 +20,7 @@ model User {
   role            Role
   createdAt       DateTime         @default(now()) @map("created_at")
   walletMovements WalletMovement[]
+  lots            Lot[]
 
   @@map("users")
 }
@@ -51,4 +52,29 @@ model WalletMovement {
   @@unique([userId, idempotencyKey])
   @@index([userId, createdAt])
   @@map("wallet_movements")
+}
+
+/// Lote do leilão. O estado (agendado, ao vivo, encerrado) deriva do relógio do servidor (RN-01);
+/// só o cancelamento é gravado. Os dados do item, inclusive a imagem, são copiados da API externa
+/// na criação (RN-13). Dinheiro em centavos inteiros (RN-16); datas em UTC (RN-17).
+model Lot {
+  id                String    @id @default(uuid()) @db.Uuid
+  auctioneerId      String    @map("auctioneer_id") @db.Uuid
+  auctioneer        User      @relation(fields: [auctioneerId], references: [id])
+  externalId        String    @map("external_id")
+  title             String
+  attributes        Json
+  imageData         Bytes     @map("image_data")
+  imageContentType  String    @map("image_content_type")
+  startingBidCents  Int       @map("starting_bid_cents")
+  minIncrementCents Int       @map("min_increment_cents")
+  startsAt          DateTime  @map("starts_at")
+  originalEndsAt    DateTime  @map("original_ends_at")
+  endsAt            DateTime  @map("ends_at")
+  canceledAt        DateTime? @map("canceled_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@index([auctioneerId])
+  @@index([endsAt])
+  @@map("lots")
 }
