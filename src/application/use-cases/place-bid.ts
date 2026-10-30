@@ -9,6 +9,7 @@ import {
 } from '../../domain/errors/idempotency-key-reused-error.ts';
 import { LotNotFoundError } from '../../domain/errors/lot-not-found-error.ts';
 import { UnauthorizedError } from '../../domain/errors/unauthorized-error.ts';
+import { type LotEventsPublisher, noLotEvents } from '../lot-events-publisher.ts';
 import {
   computeBidHash,
   genesisHash,
@@ -50,6 +51,7 @@ export class PlaceBidUseCase {
     private readonly walletRepository: WalletRepository,
     private readonly secrets: ChainSecrets,
     private readonly clock: () => Date = () => new Date(),
+    private readonly lotEvents: LotEventsPublisher = noLotEvents,
   ) {}
 
   async execute(input: PlaceBidInput): Promise<PlaceBidOutput> {
@@ -83,6 +85,7 @@ export class PlaceBidUseCase {
     });
 
     if (!result) throw new LotNotFoundError();
+    if (result.created) this.lotEvents.publish(input.lotId, 'bid'); // depois do COMMIT (AD-04)
 
     const wallet = computeBalance(await this.walletRepository.totalsByType(input.bidderId));
     return {

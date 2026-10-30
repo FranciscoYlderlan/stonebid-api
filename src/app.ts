@@ -11,8 +11,10 @@ import {
   retryAfterSeconds,
   TooManyRequestsError,
 } from './infra/http/errors/too-many-requests-error.ts';
+import { lotEventsBus } from './infra/events/lot-events.ts';
 import { authRoutes } from './infra/http/routes/auth-routes.ts';
 import { bidsRoutes } from './infra/http/routes/bids-routes.ts';
+import { eventsRoutes } from './infra/http/routes/events-routes.ts';
 import { healthRoutes } from './infra/http/routes/health-routes.ts';
 import { itemsRoutes } from './infra/http/routes/items-routes.ts';
 import { lotsRoutes } from './infra/http/routes/lots-routes.ts';
@@ -85,6 +87,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(itemsRoutes, { catalog, bidsReader });
   await app.register(lotsRoutes, { catalog, bidsReader });
   await app.register(bidsRoutes);
+  await app.register(eventsRoutes, { bus: lotEventsBus });
 
   if (options.mcpEnabled ?? env.MCP_ENABLED) {
     await app.register(mcpPlugin);
