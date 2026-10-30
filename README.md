@@ -348,8 +348,13 @@ As tools chamam as rotas reais com `app.inject()` (validação, auth e erros de 
 ## CI/CD
 
 ```
-branch → PR → CI → merge em staging → CD publica o staging → PR staging → main → CI → CD publica a produção
+branch tipo/ID-descricao → PR para main → CI verde → merge humano na main → CD publica a produção
+→ staging avança até a main (só o ponteiro) → CD publica o staging
 ```
+
+- **Produção primeiro:** todo código entra pela `main`, por PR com CI verde e merge do humano. O `cd.yml` publica a produção (API no Cloud Run; o `stonebid-web` publica na Vercel pelo próprio `cd.yml`).
+- **Staging depois, sempre igual à `main`:** a branch `staging` só avança o ponteiro até a `main` (`git push origin origin/main:refs/heads/staging`), sem merge nem commit próprio. O CI roda nesse push e o `cd.yml` publica o staging: API `stonebid-api-staging`, com MCP ligada e banco separado, e web no alias `stonebid-web-staging.vercel.app`.
+- **Nenhum deploy fora do `cd.yml`:** a integração Git da Vercel está desligada, e nada é publicado à mão.
 
 - **CI** (`.github/workflows/ci.yml`, em todo push e PR): `npm ci`, lint, Prettier, typecheck, `prisma migrate deploy` e `npm test` num PostgreSQL 18 de serviço, e `npm run build`.
 - **CD** (`.github/workflows/cd.yml`): roda quando o CI de um **push** em `main` ou `staging` termina verde. Builda a imagem Docker, envia ao Artifact Registry, roda migração + seed num Cloud Run Job e publica no Cloud Run (`stonebid-api` na `main`, `stonebid-api-staging` na `staging`). Autenticação no GCP por Workload Identity Federation, sem chave de conta de serviço; segredos no Secret Manager.
