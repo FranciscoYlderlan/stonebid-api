@@ -7,7 +7,10 @@ import type { ItemCatalog } from './domain/catalog/item-catalog.ts';
 import type { LotBidsReader } from './domain/repositories/lot-bids-reader.ts';
 import { makeItemCatalog } from './infra/external/make-item-catalog.ts';
 import { registerErrorHandler } from './infra/http/errors/error-handler.ts';
-import { TooManyRequestsError } from './infra/http/errors/too-many-requests-error.ts';
+import {
+  retryAfterSeconds,
+  TooManyRequestsError,
+} from './infra/http/errors/too-many-requests-error.ts';
 import { authRoutes } from './infra/http/routes/auth-routes.ts';
 import { healthRoutes } from './infra/http/routes/health-routes.ts';
 import { itemsRoutes } from './infra/http/routes/items-routes.ts';
@@ -25,6 +28,17 @@ import { NoBidsYetReader } from './infra/repositories/no-bids-yet-reader.ts';
  * forma numérica (`trustProxy: 1`) por não validar o endereço do salto (CVE-2026-16732).
  */
 export const TRUSTED_PROXY = '169.254.0.0/16';
+
+/**
+ * Cabeçalhos do `@fastify/rate-limit` que o navegador pode ler numa resposta CORS (o frontend mostra
+ * a espera do 429). Só esses: o resto segue fora do `Access-Control-Expose-Headers`.
+ */
+export const RATE_LIMIT_EXPOSED_HEADERS = [
+  'retry-after',
+  'x-ratelimit-limit',
+  'x-ratelimit-remaining',
+  'x-ratelimit-reset',
+];
 
 export interface BuildAppOptions {
   logger?: FastifyServerOptions['logger'];
@@ -48,6 +62,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     origin: env.CORS_ORIGIN,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
+    exposedHeaders: RATE_LIMIT_EXPOSED_HEADERS,
   });
 
   await app.register(jwt, { secret: env.JWT_SECRET });
@@ -56,7 +71,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // por instância.
   await app.register(rateLimit, {
     global: false,
-    errorResponseBuilder: (_request, context) => new TooManyRequestsError(context.after),
+    errorResponseBuilder: (_request, context) =>
+      new TooManyRequestsError(retryAfterSeconds(context.ttl)),
   });
 
   await app.register(healthRoutes);

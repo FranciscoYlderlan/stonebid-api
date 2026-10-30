@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { buildApp, TRUSTED_PROXY } from '../../src/app.ts';
+import { buildApp, RATE_LIMIT_EXPOSED_HEADERS, TRUSTED_PROXY } from '../../src/app.ts';
 import { THUMBNAIL_RATE_LIMIT } from '../../src/infra/http/routes/items-routes.ts';
 import {
   IMG_900001,
@@ -82,10 +82,14 @@ describe('GET /items/images/:imageId/thumbnail: cache e limite (RF-20, T5g)', ()
 
     const limited = await app.inject({ ...invalid, url: thumbnailUrl(IMG_900001) });
     expect(limited.statusCode).toBe(429);
+    const retryAfter = Number(limited.headers['retry-after']);
+    expect(retryAfter).toBeGreaterThan(1);
     expect(limited.json()).toEqual({
-      error: { code: 'TOO_MANY_REQUESTS', message: expect.stringContaining('Muitas requisições') },
+      error: {
+        code: 'TOO_MANY_REQUESTS',
+        message: `Muitas requisições. Tente de novo em ${retryAfter} segundos.`,
+      },
     });
-    expect(limited.headers['retry-after']).toBeDefined();
     expect(limited.headers['cache-control']).toBeUndefined();
 
     // Outras rotas, mesmo IP: sem limite.
@@ -102,6 +106,66 @@ describe('GET /items/images/:imageId/thumbnail: cache e limite (RF-20, T5g)', ()
     // Outro IP segue livre na mesma rota.
     const otherClient = await app.inject({ method: 'GET', url: thumbnailUrl(IMG_900001) });
     expect(otherClient.statusCode).toBe(200);
+  });
+});
+
+describe('GET /items/images/:imageId/thumbnail: cabeçalhos do limite legíveis pelo navegador (T5k)', () => {
+  const origin = 'http://localhost:5173';
+  let app: FastifyInstance;
+  let mock: ItemsApiMock;
+
+  beforeAll(async () => {
+    mock = await startItemsApiMock(300);
+    app = await buildApp({ itemCatalog: mock.catalog });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await mock.close();
+  });
+
+  const exposed = (header: string | string[] | number | undefined) =>
+    String(header ?? '')
+      .split(',')
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean)
+      .sort();
+
+  it('o 429 com Origin permitido expõe retry-after e x-ratelimit-*, e só eles', async () => {
+    const client = '198.51.100.40';
+    const invalid = {
+      method: 'GET' as const,
+      url: thumbnailUrl('x'),
+      remoteAddress: client,
+      headers: { origin },
+    };
+    for (let i = 0; i < THUMBNAIL_RATE_LIMIT.max; i += 1) {
+      const response = await app.inject(invalid);
+      expect(response.statusCode).toBe(400);
+    }
+
+    const limited = await app.inject(invalid);
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json().error.code).toBe('TOO_MANY_REQUESTS');
+    expect(limited.headers['access-control-allow-origin']).toBe(origin);
+    expect(exposed(limited.headers['access-control-expose-headers'])).toEqual(
+      [...RATE_LIMIT_EXPOSED_HEADERS].sort(),
+    );
+    expect(limited.headers['retry-after']).toBeDefined();
+    expect(limited.headers['x-ratelimit-limit']).toBe(String(THUMBNAIL_RATE_LIMIT.max));
+  });
+
+  // O @fastify/cors manda o Expose-Headers mesmo sem liberar a origem; sem Allow-Origin, o navegador
+  // bloqueia a resposta inteira e não lê cabeçalho nenhum.
+  it('Origin não permitido não ganha Access-Control-Allow-Origin', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: thumbnailUrl('x'),
+      remoteAddress: '198.51.100.41',
+      headers: { origin: 'https://malicioso.example' },
+    });
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
   });
 });
 
