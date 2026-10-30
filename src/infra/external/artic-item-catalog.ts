@@ -2,6 +2,7 @@ import type { ItemCatalog, ItemSearchPage } from '../../domain/catalog/item-cata
 import type { CatalogItem, ItemAttributes, ItemImage } from '../../domain/entities/item.ts';
 import { ExternalApiUnavailableError } from '../../domain/errors/external-api-unavailable-error.ts';
 import { ItemImageTooLargeError } from '../../domain/errors/item-image-too-large-error.ts';
+import { ThumbnailCache, type ThumbnailCacheOptions } from './thumbnail-cache.ts';
 
 /**
  * Adaptador da API pública do Art Institute of Chicago (AD-06), sem chave.
@@ -11,6 +12,7 @@ import { ItemImageTooLargeError } from '../../domain/errors/item-image-too-large
  * - Imagem pelo IIIF: `{iiif_url}/{image_id}/full/843,/0/default.jpg` (843 px é o tamanho em cache).
  * - Miniatura da busca: `{iiif_url}/{image_id}/full/400,/0/default.jpg`, baixada pelo servidor,
  *   porque o navegador recebe o desafio anti-robô da Cloudflare no IIIF e o `<img>` falha.
+ *   As miniaturas ficam num cache em memória por instância (THUMBNAIL_CACHE_DEFAULTS).
  */
 export interface ArticItemCatalogOptions {
   apiBaseUrl: string;
@@ -21,6 +23,8 @@ export interface ArticItemCatalogOptions {
   pageSize?: number;
   /** Validade do cache da busca, em ms (0 desliga). */
   searchCacheTtlMs?: number;
+  /** Cache das miniaturas; padrão THUMBNAIL_CACHE_DEFAULTS. */
+  thumbnailCache?: ThumbnailCacheOptions;
 }
 
 /** Cabeçalho de cortesia pedido pela AIC (o navegador não deixa trocar o User-Agent). */
@@ -49,6 +53,18 @@ const THUMBNAIL_WIDTH = 400;
 /** Teto da miniatura (uma de 400 px tem dezenas de KB). */
 const THUMBNAIL_MAX_BYTES = 1024 * 1024;
 
+/**
+ * Cache das miniaturas por instância do Cloud Run (512 MiB de memória).
+ * - 300 itens: 25 páginas da grade de 12; uma miniatura de 400 px tem ~20–80 KB (~6–24 MB).
+ * - 32 MB: teto duro (~6% da memória), mesmo se a AIC mandar miniaturas perto de 1 MB.
+ * - 24 h: o conteúdo de um id da AIC não muda; a validade só devolve a memória de ids parados.
+ */
+export const THUMBNAIL_CACHE_DEFAULTS: ThumbnailCacheOptions = {
+  maxEntries: 300,
+  maxBytes: 32 * 1024 * 1024,
+  ttlMs: 24 * 60 * 60 * 1000,
+};
+
 interface ArticArtwork {
   id: number;
   title?: string | null;
@@ -69,10 +85,12 @@ export class ArticItemCatalog implements ItemCatalog {
   private readonly pageSize: number;
   private readonly cacheTtlMs: number;
   private readonly searchCache = new Map<string, { expiresAt: number; value: ItemSearchPage }>();
+  private readonly thumbnails: ThumbnailCache;
 
   constructor(private readonly options: ArticItemCatalogOptions) {
     this.pageSize = options.pageSize ?? 12;
     this.cacheTtlMs = options.searchCacheTtlMs ?? 5 * 60 * 1000;
+    this.thumbnails = new ThumbnailCache(options.thumbnailCache ?? THUMBNAIL_CACHE_DEFAULTS);
   }
 
   async search(query: string, page: number): Promise<ItemSearchPage> {
@@ -152,8 +170,14 @@ export class ArticItemCatalog implements ItemCatalog {
 
   async downloadThumbnail(imageId: string): Promise<ItemImage | null> {
     if (!IMAGE_ID_PATTERN.test(imageId)) return null;
+    const id = imageId.toLowerCase();
+    return this.thumbnails.get(id, () => this.fetchThumbnail(id));
+  }
+
+  /** Busca a miniatura no IIIF, sem cache. `imageId` já validado e em minúsculas. */
+  private async fetchThumbnail(imageId: string): Promise<ItemImage | null> {
     const base = this.options.iiifBaseUrl.replace(/\/+$/, '');
-    const url = `${base}/${imageId.toLowerCase()}/full/${THUMBNAIL_WIDTH},/0/default.jpg`;
+    const url = `${base}/${imageId}/full/${THUMBNAIL_WIDTH},/0/default.jpg`;
 
     const response = await this.request(url, 'image/*');
     if (response.status === 404) {

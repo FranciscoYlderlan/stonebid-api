@@ -1,10 +1,12 @@
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
+import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { env } from './env/index.ts';
 import type { ItemCatalog } from './domain/catalog/item-catalog.ts';
 import { makeItemCatalog } from './infra/external/make-item-catalog.ts';
 import { registerErrorHandler } from './infra/http/errors/error-handler.ts';
+import { TooManyRequestsError } from './infra/http/errors/too-many-requests-error.ts';
 import { authRoutes } from './infra/http/routes/auth-routes.ts';
 import { healthRoutes } from './infra/http/routes/health-routes.ts';
 import { itemsRoutes } from './infra/http/routes/items-routes.ts';
@@ -34,6 +36,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   await app.register(jwt, { secret: env.JWT_SECRET });
+
+  // Limite só nas rotas que pedem (`config.rateLimit`), por IP, em memória por instância.
+  await app.register(rateLimit, {
+    global: false,
+    errorResponseBuilder: (_request, context) => new TooManyRequestsError(context.after),
+  });
 
   await app.register(healthRoutes);
   await app.register(authRoutes);
