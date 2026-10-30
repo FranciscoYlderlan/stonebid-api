@@ -3,12 +3,18 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.ts';
 import { AIC_USER_AGENT } from '../../src/infra/external/artic-item-catalog.ts';
 import { prisma } from '../../src/infra/repositories/prisma/prisma-client.ts';
+import { getItemAuction } from '../../src/domain/entities/item-auction.ts';
+import { ItemAlreadyAuctionedError } from '../../src/domain/errors/item-already-auctioned-error.ts';
+import type { LotBidsReader } from '../../src/domain/repositories/lot-bids-reader.ts';
+import { PrismaLotsRepository } from '../../src/infra/repositories/prisma/prisma-lots-repository.ts';
 import { registerUser } from './helpers.ts';
 import {
   IMG_900001,
   IMG_900003,
   MOCK_IMAGE,
+  searchByIds,
   startItemsApiMock,
+  uniqueExternalId,
   type ItemsApiMock,
 } from './items-api-mock.ts';
 
@@ -19,11 +25,20 @@ function iso(offsetMs: number): string {
   return new Date(Date.now() + offsetMs).toISOString();
 }
 
+/** Lances simulados (os reais chegam no I2): marca um lote como arrematado (RN-19). */
+const lotsWithBids = new Set<string>();
+const fakeBidsReader: LotBidsReader = {
+  hasBids: async (lotId) => lotsWithBids.has(lotId),
+  listLotIdsWithBids: async (lotIds) => new Set(lotIds.filter((id) => lotsWithBids.has(id))),
+};
+
 describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
   let app: FastifyInstance;
   let mock: ItemsApiMock;
   let auctioneerA: { token: string; id: string };
   let auctioneerB: { token: string; id: string };
+  /** Segundo leiloeiro dos testes da RN-19 (o B é conferido em GET /auctioneer/lots). */
+  let auctioneerC: { token: string; id: string };
   let bidder: { token: string };
 
   const auth = (token: string) => ({ authorization: `Bearer ${token}` });
@@ -34,7 +49,8 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
       url: '/lots',
       headers: auth(token),
       payload: {
-        externalId: '900001',
+        // RN-19: uma obra só tem um lote vivo; cada lote de teste usa uma obra própria.
+        externalId: uniqueExternalId(),
         startingBidCents: 10_000,
         minIncrementCents: 500,
         startsAt: iso(0),
@@ -45,12 +61,12 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
   }
 
   /** Lote encerrado gravado direto no banco (a rota não deixa criar no passado). */
-  async function insertEndedLot(auctioneerId: string, endedMsAgo: number) {
+  async function insertEndedLot(auctioneerId: string, endedMsAgo: number, externalId = '900003') {
     const endsAt = new Date(Date.now() - endedMsAgo);
     return prisma.lot.create({
       data: {
         auctioneerId,
-        externalId: '900003',
+        externalId,
         title: 'Encerrado de teste',
         attributes: {},
         imageData: new Uint8Array(MOCK_IMAGE),
@@ -66,12 +82,14 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
 
   beforeAll(async () => {
     mock = await startItemsApiMock(300);
-    app = await buildApp({ itemCatalog: mock.catalog });
+    app = await buildApp({ itemCatalog: mock.catalog, lotBidsReader: fakeBidsReader });
     await app.ready();
 
     const a = (await registerUser(app, { role: 'AUCTIONEER' })).response.json();
     const b = (await registerUser(app, { role: 'AUCTIONEER' })).response.json();
     const c = (await registerUser(app, { role: 'BIDDER' })).response.json();
+    const d = (await registerUser(app, { role: 'AUCTIONEER' })).response.json();
+    auctioneerC = { token: d.token, id: d.user.id };
     auctioneerA = { token: a.token, id: a.user.id };
     auctioneerB = { token: b.token, id: b.user.id };
     bidder = { token: c.token };
@@ -115,6 +133,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
           dimensions: '50 × 70 cm',
           placeOfOrigin: 'Brasil',
         },
+        auction: null,
       });
 
       const [call] = mock.requests;
@@ -257,6 +276,18 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
       expect(stored.auctioneerId).toBe(auctioneerA.id);
     });
 
+    it('título e atributos copiados da obra 900001', async () => {
+      const response = await createLot(auctioneerA.token, { externalId: '900001' });
+      expect(response.statusCode).toBe(201);
+      expect(response.json().title).toBe('Paisagem simulada');
+      // Libera a obra para o teste do MCP, que cria o primeiro item da busca (RN-19).
+      await app.inject({
+        method: 'POST',
+        url: `/lots/${response.json().id}/cancel`,
+        headers: auth(auctioneerA.token),
+      });
+    });
+
     it('início no futuro → agendado', async () => {
       const response = await createLot(auctioneerA.token, {
         startsAt: iso(HOUR),
@@ -333,6 +364,194 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
       expect((await createLot(bidder.token)).statusCode).toBe(403);
       const anonymous = await app.inject({ method: 'POST', url: '/lots', payload: {} });
       expect(anonymous.statusCode).toBe(401);
+    });
+  });
+
+  describe('uma obra, um lote vivo (RN-19)', () => {
+    const cancel = (id: string, token = auctioneerA.token) =>
+      app.inject({ method: 'POST', url: `/lots/${id}/cancel`, headers: auth(token) });
+
+    it('agendado prende a obra para qualquer leiloeiro → 409 ITEM_ALREADY_AUCTIONED, sem chamar a API', async () => {
+      const externalId = uniqueExternalId();
+      const lot = (
+        await createLot(auctioneerA.token, {
+          externalId,
+          startsAt: iso(HOUR),
+          endsAt: iso(2 * HOUR),
+        })
+      ).json();
+      const before = await prisma.lot.count();
+      mock.requests.length = 0;
+
+      for (const token of [auctioneerA.token, auctioneerC.token]) {
+        const response = await createLot(token, { externalId });
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toEqual({
+          error: {
+            code: 'ITEM_ALREADY_AUCTIONED',
+            message:
+              'Esta obra já tem um lote agendado. Uma obra só pode estar em um lote por vez: ' +
+              'para leiloá-la em outro lote, o lote atual precisa ser cancelado.',
+            details: { status: 'SCHEDULED', lotId: lot.id },
+          },
+        });
+      }
+      expect(await prisma.lot.count()).toBe(before);
+      expect(mock.requests).toHaveLength(0);
+    });
+
+    it('ao vivo prende a obra → 409 com status LIVE', async () => {
+      const externalId = uniqueExternalId();
+      const lot = (await createLot(auctioneerA.token, { externalId })).json();
+      expect(lot.status).toBe('LIVE');
+
+      const response = await createLot(auctioneerC.token, {
+        externalId,
+        startsAt: iso(3 * HOUR),
+        endsAt: iso(4 * HOUR),
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toEqual({
+        code: 'ITEM_ALREADY_AUCTIONED',
+        message:
+          'Esta obra já está em leilão em um lote ao vivo. Uma obra só pode estar em um lote por vez.',
+        details: { status: 'LIVE', lotId: lot.id },
+      });
+    });
+
+    it('arrematado (encerrado com lances) prende para sempre → 409 com status SOLD', async () => {
+      const externalId = uniqueExternalId();
+      const sold = await insertEndedLot(auctioneerA.id, HOUR, externalId);
+      lotsWithBids.add(sold.id);
+
+      const response = await createLot(auctioneerA.token, { externalId });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toEqual({
+        code: 'ITEM_ALREADY_AUCTIONED',
+        message: 'Esta obra já foi vendida em leilão e não pode ser leiloada de novo.',
+        details: { status: 'SOLD', lotId: sold.id },
+      });
+    });
+
+    it('cancelado libera → 201; o lote novo prende de novo', async () => {
+      const externalId = uniqueExternalId();
+      const first = (await createLot(auctioneerA.token, { externalId })).json();
+      expect((await cancel(first.id)).statusCode).toBe(200);
+
+      const second = await createLot(auctioneerC.token, { externalId });
+      expect(second.statusCode).toBe(201);
+      const third = await createLot(auctioneerA.token, { externalId });
+      expect(third.statusCode).toBe(409);
+      expect(third.json().error.details).toEqual({ status: 'LIVE', lotId: second.json().id });
+    });
+
+    it('encerrado sem lances libera → 201', async () => {
+      const externalId = uniqueExternalId();
+      await insertEndedLot(auctioneerA.id, MINUTE, externalId);
+      await insertEndedLot(auctioneerA.id, 2 * HOUR, externalId);
+      const response = await createLot(auctioneerC.token, { externalId });
+      expect(response.statusCode).toBe(201);
+    });
+
+    it('corrida: 5 criações simultâneas da mesma obra → 1 lote (201) e 4 × 409', async () => {
+      const externalId = uniqueExternalId();
+      const responses = await Promise.all(
+        Array.from({ length: 5 }, (_, i) =>
+          createLot(i % 2 === 0 ? auctioneerA.token : auctioneerC.token, { externalId }),
+        ),
+      );
+      const statuses = responses.map((response) => response.statusCode).sort();
+      expect(statuses).toEqual([201, 409, 409, 409, 409]);
+
+      const created = responses.find((response) => response.statusCode === 201)!.json();
+      for (const response of responses.filter((r) => r.statusCode === 409)) {
+        expect(response.json().error.details).toEqual({ status: 'LIVE', lotId: created.id });
+      }
+      expect(await prisma.lot.count({ where: { externalId } })).toBe(1);
+    });
+
+    it('trava da obra no repositório: com a checagem lenta, a segunda criação espera e vê a primeira', async () => {
+      const repository = new PrismaLotsRepository();
+      const externalId = uniqueExternalId();
+      const data = {
+        auctioneerId: auctioneerA.id,
+        externalId,
+        title: 'Corrida',
+        attributes: {
+          artist: null,
+          date: null,
+          medium: null,
+          dimensions: null,
+          placeOfOrigin: null,
+        },
+        image: { data: new Uint8Array(MOCK_IMAGE), contentType: 'image/png' },
+        startingBidCents: 1_000,
+        minIncrementCents: 100,
+        startsAt: new Date(Date.now() + HOUR),
+        endsAt: new Date(Date.now() + 2 * HOUR),
+      };
+      // Janela larga entre a leitura e a gravação: sem a trava, as duas leriam "nenhum lote".
+      const slowGuard = async (lotsOfItem: Parameters<typeof getItemAuction>[0]) => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const auction = getItemAuction(lotsOfItem, new Date(), new Set());
+        if (auction) throw new ItemAlreadyAuctionedError(auction);
+      };
+
+      const results = await Promise.allSettled([
+        repository.create(data, slowGuard),
+        repository.create(data, slowGuard),
+      ]);
+
+      expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+      const rejected = results.find((result) => result.status === 'rejected');
+      expect(rejected?.reason).toBeInstanceOf(ItemAlreadyAuctionedError);
+      expect(await prisma.lot.count({ where: { externalId } })).toBe(1);
+    });
+
+    it('busca traz a situação e o lote de cada obra', async () => {
+      const [scheduledId, liveId, soldId, canceledId, endedId, freeId] = Array.from(
+        { length: 6 },
+        uniqueExternalId,
+      );
+      const scheduled = (
+        await createLot(auctioneerA.token, {
+          externalId: scheduledId,
+          startsAt: iso(HOUR),
+          endsAt: iso(2 * HOUR),
+        })
+      ).json();
+      const live = (await createLot(auctioneerC.token, { externalId: liveId })).json();
+      const sold = await insertEndedLot(auctioneerA.id, HOUR, soldId);
+      lotsWithBids.add(sold.id);
+      // Outro lote da mesma obra, encerrado sem lances: não muda a situação de vendida.
+      await insertEndedLot(auctioneerA.id, 2 * HOUR, soldId);
+      const canceled = (await createLot(auctioneerA.token, { externalId: canceledId })).json();
+      await cancel(canceled.id);
+      await insertEndedLot(auctioneerA.id, MINUTE, endedId);
+
+      const ids = [scheduledId, liveId, soldId, canceledId, endedId, freeId] as string[];
+      const response = await app.inject({
+        method: 'GET',
+        url: `/items/search?q=${encodeURIComponent(searchByIds(ids))}`,
+        headers: auth(auctioneerA.token),
+      });
+      expect(response.statusCode).toBe(200);
+      const auctionById = Object.fromEntries(
+        response
+          .json()
+          .items.map((item: { externalId: string; auction: unknown }) => [
+            item.externalId,
+            item.auction,
+          ]),
+      );
+      expect(auctionById).toEqual({
+        [scheduledId!]: { status: 'SCHEDULED', lotId: scheduled.id },
+        [liveId!]: { status: 'LIVE', lotId: live.id },
+        [soldId!]: { status: 'SOLD', lotId: sold.id },
+        [canceledId!]: null,
+        [endedId!]: null,
+        [freeId!]: null,
+      });
     });
   });
 

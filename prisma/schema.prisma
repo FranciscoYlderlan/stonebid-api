@@ -56,7 +56,8 @@ model WalletMovement {
 
 /// Lote do leilão. O estado (agendado, ao vivo, encerrado) deriva do relógio do servidor (RN-01);
 /// só o cancelamento é gravado. Os dados do item, inclusive a imagem, são copiados da API externa
-/// na criação (RN-13). Dinheiro em centavos inteiros (RN-16); datas em UTC (RN-17).
+/// na criação (RN-13). RN-19: uma obra (externalId) só tem um lote agendado, ao vivo ou arrematado;
+/// a criação trava a obra com pg_advisory_xact_lock (não há coluna de estado para índice parcial). Dinheiro em centavos inteiros (RN-16); datas em UTC (RN-17).
 model Lot {
   id                String    @id @default(uuid()) @db.Uuid
   auctioneerId      String    @map("auctioneer_id") @db.Uuid
@@ -76,5 +77,7 @@ model Lot {
 
   @@index([auctioneerId])
   @@index([endsAt])
+  /// Lotes da obra: checagem da RN-19 na criação e situação da obra na busca.
+  @@index([externalId])
   @@map("lots")
 }

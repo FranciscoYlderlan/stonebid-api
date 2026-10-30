@@ -40,6 +40,28 @@ export const mockArtworks = [
   { id: 900004, title: 'Imagem grande', image_id: IMG_BIG, is_public_domain: true },
 ];
 
+/**
+ * Obras extras (RN-19): uma obra só tem um lote vivo, então cada teste usa ids próprios.
+ * Ids de 910000 a 919999 existem no simulador, com os dados do 900001 (mesma imagem).
+ */
+export const GENERIC_ID_MIN = 910_000;
+export const GENERIC_ID_MAX = 919_999;
+
+function genericArtwork(id: number) {
+  return { ...mockArtworks[0]!, id };
+}
+
+let nextGenericId = GENERIC_ID_MIN;
+/** Id de obra que nenhum outro teste usa (dentro da mesma execução). */
+export function uniqueExternalId(): string {
+  return String(nextGenericId++);
+}
+
+/** Busca que devolve exatamente estas obras genéricas: `q=ids:910001,910002`. */
+export function searchByIds(ids: readonly string[]): string {
+  return `ids:${ids.join(',')}`;
+}
+
 export type MockMode = 'ok' | 'down' | 'slow';
 
 export interface ItemsApiMock {
@@ -75,6 +97,15 @@ export async function startItemsApiMock(timeoutMs = 300): Promise<ItemsApiMock> 
       res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
 
     if (url.pathname === '/api/v1/artworks/search') {
+      const ids = url.searchParams.get('q')?.match(/^ids:([\d,]+)$/);
+      if (ids) {
+        const data = (ids[1] ?? '').split(',').map((id) => genericArtwork(Number(id)));
+        return json(200, {
+          pagination: { total: data.length, total_pages: 1, current_page: 1 },
+          data,
+          config,
+        });
+      }
       return json(200, {
         pagination: { total: mockArtworks.length, total_pages: 1, current_page: 1 },
         data: mockArtworks,
@@ -84,7 +115,11 @@ export async function startItemsApiMock(timeoutMs = 300): Promise<ItemsApiMock> 
 
     const artwork = url.pathname.match(/^\/api\/v1\/artworks\/(\d+)$/);
     if (artwork) {
-      const found = mockArtworks.find((item) => String(item.id) === artwork[1]);
+      const id = Number(artwork[1]);
+      const found =
+        id >= GENERIC_ID_MIN && id <= GENERIC_ID_MAX
+          ? genericArtwork(id)
+          : mockArtworks.find((item) => item.id === id);
       return found
         ? json(200, { data: found, config })
         : json(404, { status: 404, error: 'Not found' });
