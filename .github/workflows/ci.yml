@@ -32,6 +32,8 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/stonebid_test
       DATABASE_URL_TEST: postgresql://postgres:postgres@localhost:5432/stonebid_test
       JWT_SECRET: ci-jwt-secret-with-at-least-32-characters
+      SEAL_SECRET: ci-seal-secret-with-at-least-32-characters
+      PSEUDONYM_SECRET: ci-pseudonym-secret-with-at-least-32-chars
       CORS_ORIGIN: http://localhost:5173
       SEED_PASSWORD: stonebid123
       MCP_ENABLED: 'false'

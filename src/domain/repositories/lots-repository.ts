@@ -37,6 +37,10 @@ export interface LotsRepository {
   listEnded(now: Date, limit: number): Promise<Lot[]>;
   /** Todos os lotes do leiloeiro, inclusive cancelados, mais novos primeiro. */
   listByAuctioneer(auctioneerId: string): Promise<Lot[]>;
-  /** Grava o cancelamento se o lote ainda não foi cancelado nem encerrou; `null` se perdeu a corrida. */
-  cancel(id: string, now: Date): Promise<Lot | null>;
+  /**
+   * Cancela numa transação que trava a linha do lote (`FOR UPDATE`), a mesma trava do lance
+   * (RN-09, M-13): `decide` recebe o lote lido sob a trava, lança o erro da recusa ou devolve a
+   * hora do cancelamento. `null` se o lote não existe.
+   */
+  cancel(id: string, decide: (lot: Lot) => Date): Promise<Lot | null>;
 }

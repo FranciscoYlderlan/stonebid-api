@@ -23,7 +23,8 @@ export class PrismaWalletRepository implements WalletRepository {
   async listByUser(userId: string): Promise<WalletMovement[]> {
     return prisma.walletMovement.findMany({
       where: { userId },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      // Sequência global do extrato: ordem estável mesmo com o mesmo horário.
+      orderBy: { seq: 'desc' },
     });
   }
 

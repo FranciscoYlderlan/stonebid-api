@@ -20,7 +20,9 @@ model User {
   role            Role
   createdAt       DateTime         @default(now()) @map("created_at")
   walletMovements WalletMovement[]
-  lots            Lot[]
+  lots            Lot[]            @relation("LotAuctioneer")
+  leadingLots     Lot[]            @relation("LotLeader")
+  bids            Bid[]
 
   @@map("users")
 }
@@ -38,19 +40,25 @@ enum WalletMovementType {
 /// Extrato da carteira, só de inserção: o saldo é derivado destas linhas (nunca update/delete).
 model WalletMovement {
   id             String             @id @default(uuid()) @db.Uuid
+  /// Ordem do extrato: identity global crescente (decisão de 2026-10-30). Movimentos da mesma
+  /// operação (COMMIT do novo líder e RELEASE do antigo) saem em ordem estável; dentro de uma
+  /// carteira pode haver buracos.
+  seq            Int                @unique @default(autoincrement())
   userId         String             @map("user_id") @db.Uuid
   user           User               @relation(fields: [userId], references: [id])
   type           WalletMovementType
   /// Centavos inteiros, sempre > 0 (CHECK no banco).
   amountCents    Int                @map("amount_cents")
-  /// Lote do movimento (COMMIT, RELEASE, DEBIT, CREDIT, REFUND). A relação com Lot entra no I2.
+  /// Lote do movimento (COMMIT, RELEASE, DEBIT, CREDIT, REFUND).
   lotId          String?            @map("lot_id") @db.Uuid
+  lot            Lot?               @relation(fields: [lotId], references: [id], onDelete: Restrict)
   /// Chave do cabeçalho Idempotency-Key (RN-18): única por usuário.
   idempotencyKey String?            @map("idempotency_key")
   createdAt      DateTime           @default(now()) @map("created_at")
 
   @@unique([userId, idempotencyKey])
   @@index([userId, createdAt])
+  @@index([lotId])
   @@map("wallet_movements")
 }
 
@@ -59,25 +67,59 @@ model WalletMovement {
 /// na criação (RN-13). RN-19: uma obra (externalId) só tem um lote agendado, ao vivo ou arrematado;
 /// a criação trava a obra com pg_advisory_xact_lock (não há coluna de estado para índice parcial). Dinheiro em centavos inteiros (RN-16); datas em UTC (RN-17).
 model Lot {
-  id                String    @id @default(uuid()) @db.Uuid
-  auctioneerId      String    @map("auctioneer_id") @db.Uuid
-  auctioneer        User      @relation(fields: [auctioneerId], references: [id])
-  externalId        String    @map("external_id")
+  id                String           @id @default(uuid()) @db.Uuid
+  auctioneerId      String           @map("auctioneer_id") @db.Uuid
+  auctioneer        User             @relation("LotAuctioneer", fields: [auctioneerId], references: [id])
+  externalId        String           @map("external_id")
   title             String
   attributes        Json
-  imageData         Bytes     @map("image_data")
-  imageContentType  String    @map("image_content_type")
-  startingBidCents  Int       @map("starting_bid_cents")
-  minIncrementCents Int       @map("min_increment_cents")
-  startsAt          DateTime  @map("starts_at")
-  originalEndsAt    DateTime  @map("original_ends_at")
-  endsAt            DateTime  @map("ends_at")
-  canceledAt        DateTime? @map("canceled_at")
-  createdAt         DateTime  @default(now()) @map("created_at")
+  imageData         Bytes            @map("image_data")
+  imageContentType  String           @map("image_content_type")
+  startingBidCents  Int              @map("starting_bid_cents")
+  minIncrementCents Int              @map("min_increment_cents")
+  startsAt          DateTime         @map("starts_at")
+  originalEndsAt    DateTime         @map("original_ends_at")
+  endsAt            DateTime         @map("ends_at")
+  canceledAt        DateTime?        @map("canceled_at")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  /// Lance atual e líder (RN-04, RN-07), atualizados na mesma transação do lance.
+  currentBidCents   Int?             @map("current_bid_cents")
+  leaderId          String?          @map("leader_id") @db.Uuid
+  leader            User?            @relation("LotLeader", fields: [leaderId], references: [id], onDelete: Restrict)
+  /// Cabeça da cadeia de hash (M-12): número e hash do último lance e o selo dos dois.
+  headSeq           Int              @default(0) @map("head_seq")
+  headHash          String?          @map("head_hash")
+  headSeal          String?          @map("head_seal")
+  bids              Bid[]
+  walletMovements   WalletMovement[]
 
   @@index([auctioneerId])
   @@index([endsAt])
   /// Lotes da obra: checagem da RN-19 na criação e situação da obra na busca.
   @@index([externalId])
   @@map("lots")
+}
+
+/// Lance (RN-02 a RN-09, RN-14): só de inserção, encadeado por hash dentro do lote (M-12).
+/// O pseudônimo não é gravado: deriva do licitante e entra no hash.
+model Bid {
+  id             String   @id @default(uuid()) @db.Uuid
+  lotId          String   @map("lot_id") @db.Uuid
+  lot            Lot      @relation(fields: [lotId], references: [id])
+  /// 1..n dentro do lote, sem buracos.
+  seq            Int
+  bidderId       String   @map("bidder_id") @db.Uuid
+  bidder         User     @relation(fields: [bidderId], references: [id])
+  amountCents    Int      @map("amount_cents")
+  /// Chave do cabeçalho Idempotency-Key (RN-18): única por licitante.
+  idempotencyKey String   @map("idempotency_key")
+  /// Gravado pela aplicação (entra no hash em milissegundos).
+  createdAt      DateTime @map("created_at") @db.Timestamptz(3)
+  prevHash       String   @map("prev_hash")
+  hash           String
+  seal           String
+
+  @@unique([lotId, seq])
+  @@unique([bidderId, idempotencyKey])
+  @@map("bids")
 }
