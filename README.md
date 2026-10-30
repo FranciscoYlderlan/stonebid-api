@@ -95,17 +95,19 @@ Idempotência: o banco tem índice único em (`user_id`, `idempotency_key`); dua
 
 Rotas protegidas usam `Authorization: Bearer <token>`. Valores em **centavos inteiros**; datas ISO 8601 em UTC.
 
-| Rota                         | Quem            | Sucesso                                                                             | Erros                                                                                                    |
-| ---------------------------- | --------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `GET /items/search?q=&page=` | AUCTIONEER      | 200 `{ items: [{ externalId, title, imageUrl, attributes }], page, totalPages }`    | 502 `EXTERNAL_API_UNAVAILABLE`                                                                           |
-| `POST /lots`                 | AUCTIONEER      | 201 `lot`                                                                           | 400 `VALIDATION_ERROR`, 404 `ITEM_NOT_FOUND`, 422 `ITEM_IMAGE_TOO_LARGE`, 502 `EXTERNAL_API_UNAVAILABLE` |
-| `GET /lots`                  | público         | 200 `{ serverTime, live, scheduled, ended }`                                        |                                                                                                          |
-| `GET /lots/:id`              | público         | 200 `{ serverTime, lot }` (cancelado também)                                        | 404 `LOT_NOT_FOUND`                                                                                      |
-| `GET /lots/:id/image`        | público         | 200 bytes da imagem, `Cache-Control: public, max-age=86400`                         | 404 `LOT_NOT_FOUND`                                                                                      |
-| `GET /auctioneer/lots`       | AUCTIONEER      | 200 `{ serverTime, items }`, só os lotes do próprio leiloeiro, inclusive cancelados |                                                                                                          |
-| `POST /lots/:id/cancel`      | AUCTIONEER dono | 200 `lot`                                                                           | 403 `FORBIDDEN` (não é o dono), 404, 409 `LOT_NOT_CANCELABLE` (encerrado, já cancelado ou com lances)    |
+| Rota                                   | Quem            | Sucesso                                                                                                  | Erros                                                                                                    |
+| -------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `GET /items/search?q=&page=`           | AUCTIONEER      | 200 `{ items: [{ externalId, title, imageUrl, attributes }], page, totalPages }`                         | 502 `EXTERNAL_API_UNAVAILABLE`                                                                           |
+| `GET /items/images/:imageId/thumbnail` | público         | 200 miniatura (400 px) baixada pelo servidor no IIIF, `Cache-Control: public, max-age=604800, immutable` | 400 `VALIDATION_ERROR` (id não é UUID), 404 `ITEM_NOT_FOUND`, 502 `EXTERNAL_API_UNAVAILABLE`             |
+| `POST /lots`                           | AUCTIONEER      | 201 `lot`                                                                                                | 400 `VALIDATION_ERROR`, 404 `ITEM_NOT_FOUND`, 422 `ITEM_IMAGE_TOO_LARGE`, 502 `EXTERNAL_API_UNAVAILABLE` |
+| `GET /lots`                            | público         | 200 `{ serverTime, live, scheduled, ended }`                                                             |                                                                                                          |
+| `GET /lots/:id`                        | público         | 200 `{ serverTime, lot }` (cancelado também)                                                             | 404 `LOT_NOT_FOUND`                                                                                      |
+| `GET /lots/:id/image`                  | público         | 200 bytes da imagem, `Cache-Control: public, max-age=86400`                                              | 404 `LOT_NOT_FOUND`                                                                                      |
+| `GET /auctioneer/lots`                 | AUCTIONEER      | 200 `{ serverTime, items }`, só os lotes do próprio leiloeiro, inclusive cancelados                      |                                                                                                          |
+| `POST /lots/:id/cancel`                | AUCTIONEER dono | 200 `lot`                                                                                                | 403 `FORBIDDEN` (não é o dono), 404, 409 `LOT_NOT_CANCELABLE` (encerrado, já cancelado ou com lances)    |
 
 - **Corpo do `POST /lots`:** `{ externalId, startingBidCents, minIncrementCents, startsAt, endsAt }`. O lance inicial é o valor mínimo do lote. O início não pode estar no passado (tolerância de 60 s) e o fim fica pelo menos 5 minutos depois do início. Não há edição de lote.
+- **Miniatura da busca:** o `imageUrl` de cada item da busca é relativo à API (`/items/images/{imageId}/thumbnail`), não o IIIF da AIC: no navegador, o IIIF responde com o desafio anti-robô da Cloudflare e o `<img>` falha. A rota é pública porque o `<img>` não manda o JWT, e as imagens são de domínio público. O servidor só aceita id de imagem em UUID e monta a URL no `ITEMS_IIIF_BASE_URL` (sem receber URL do cliente).
 - **`lot`** = `{ id, title, attributes, imageUrl: "/lots/{id}/image", startingBidCents, minIncrementCents, currentBidCents, startsAt, originalEndsAt, endsAt, status, canceledAt }`, sem dados do leiloeiro. `attributes` = `{ artist, date, medium, dimensions, placeOfOrigin }` (cada um pode ser `null`).
 - **Estado** (`status`) vem do relógio do servidor: `SCHEDULED` antes do início, `LIVE` entre início e fim, `ENDED` a partir do fim, `CANCELED` se o leiloeiro cancelou. Só o cancelamento é gravado. Use `serverTime` para contagens regressivas.
 - **Vitrine:** ao vivo pelo fim mais próximo, agendados pelo início mais próximo, encerrados pelo fim mais recente (até 30). Cancelados ficam fora.
@@ -113,7 +115,7 @@ Rotas protegidas usam `Authorization: Bearer <token>`. Valores em **centavos int
 
 ### API externa de itens (Art Institute of Chicago)
 
-Só a busca do painel (`GET /items/search`) e a criação do lote chamam a API. Ao criar o lote, título, atributos e **a imagem** são copiados para o PostgreSQL; vitrine, detalhe e imagem nunca chamam a API, então seguem de pé se ela cair.
+Só a busca do painel (`GET /items/search`), a miniatura da busca (`GET /items/images/:imageId/thumbnail`) e a criação do lote chamam a API. Ao criar o lote, título, atributos e **a imagem** são copiados para o PostgreSQL; vitrine, detalhe e imagem nunca chamam a API, então seguem de pé se ela cair.
 
 - Sem chave. Cada chamada leva `AIC-User-Agent: stonebid (https://github.com/FranciscoYlderlan/stonebid-api)`, como a [documentação](https://api.artic.edu/docs/) pede.
 - Limite da AIC: 60 requisições por minuto por IP (anônimo). A busca guarda resultados por 5 minutos em memória.
