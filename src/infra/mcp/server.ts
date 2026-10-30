@@ -3,6 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import type { McpSessionState } from './session.ts';
 import { registerAuthTools } from './tools/auth-tools.ts';
 import { registerHealthTools } from './tools/health-tools.ts';
+import { registerItemsTools } from './tools/items-tools.ts';
+import { registerLotsTools } from './tools/lots-tools.ts';
 import { registerSessionTools } from './tools/session-tools.ts';
 import { registerWalletTools } from './tools/wallet-tools.ts';
 
@@ -14,6 +16,8 @@ export function createMcpServer(app: FastifyInstance, state: McpSessionState): M
   registerHealthTools(server, app);
   registerAuthTools(server, app, state);
   registerWalletTools(server, app, state);
+  registerItemsTools(server, app, state);
+  registerLotsTools(server, app, state);
 
   return server;
 }
