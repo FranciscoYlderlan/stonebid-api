@@ -1,8 +1,44 @@
 # stonebid-api
 
-API do **Stonebid**, uma casa de leilões online: o leiloeiro monta lotes, licitantes dão lances ao vivo com saldo simulado, e qualquer pessoa audita o histórico de lances de um lote.
+API do **Stonebid**, uma casa de leilões online: o leiloeiro monta lotes com obras de uma API pública, licitantes dão lances ao vivo com saldo simulado, quem vence recebe um comprovante compartilhável por link, e qualquer pessoa, sem login, audita o histórico de lances de um lote e verifica se ele foi adulterado.
 
-Stack: Node (LTS) · Fastify 5 · TypeScript · Prisma 7 (adapter `pg`) sobre PostgreSQL · zod 4 · Vitest · ESLint + Prettier · Docker · GitHub Actions.
+## No ar
+
+| Ambiente | API                                                                                                                             | Web                                     |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| Produção | https://stonebid-api-7idhzkkvpq-rj.a.run.app ([`/health`](https://stonebid-api-7idhzkkvpq-rj.a.run.app/health))                 | https://stonebid-web.vercel.app         |
+| Staging  | https://stonebid-api-staging-7idhzkkvpq-rj.a.run.app ([`/health`](https://stonebid-api-staging-7idhzkkvpq-rj.a.run.app/health)) | https://stonebid-web-staging.vercel.app |
+
+- Frontend: https://github.com/FranciscoYlderlan/stonebid-web
+- Usuários de teste (os dois ambientes): `leiloeiro@stonebid.dev`, `licitante-1@stonebid.dev` e `licitante-2@stonebid.dev`, senha `stonebid123`. Detalhes em [Dados de teste (seed)](#dados-de-teste-seed).
+- A camada MCP (`/mcp`) só existe em local e staging; em produção está desligada.
+- O staging dorme sem uso: a primeira requisição depois de parado leva alguns segundos.
+
+## Stack
+
+Node 22+ (imagem Docker no Node 24) · Fastify 5 · TypeScript · Prisma 7 (adapter `pg`) sobre PostgreSQL · zod 4 · JWT (`@fastify/jwt`) · bcrypt · SDK do MCP · Vitest · ESLint + Prettier · Docker · GitHub Actions · Cloud Run + Cloud SQL (GCP).
+
+## Arquitetura
+
+Camadas no estilo limpo, com a dependência sempre apontando para dentro:
+
+- **`src/domain/`:** entidades e regras puras (lance, estado do lote, anti-sniping, cadeia de hash, auditoria), erros de negócio e as interfaces (portas) de repositório e do catálogo de itens. Não importa Fastify, Prisma nem nada de `infra/`.
+- **`src/application/use-cases/`:** um caso de uso por ação (dar lance, liquidar, cancelar, auditar…). Recebe repositórios e relógio por construtor, então os testes trocam o relógio e o banco.
+- **`src/infra/`:** o que fala com o mundo: rotas e controllers HTTP, repositórios Prisma (transações e travas), adaptador da API do Art Institute of Chicago, barramento do tempo real (SSE), camada MCP e as factories que montam cada caso de uso.
+
+A árvore completa está em [Estrutura](#estrutura).
+
+## Regras de negócio (resumo)
+
+Cada item tem a seção própria abaixo, com os detalhes e os códigos de erro.
+
+- **Lance:** só licitante, só com o lote ao vivo; o primeiro lance é pelo menos o lance inicial, os seguintes pelo menos o atual + o incremento; quem lidera não cobre o próprio lance. Ver [Lances](#lances).
+- **Saldo comprometido:** quem lidera um lote tem o valor do lance preso; ao ser superado, o valor volta na hora. Um lance só passa se couber no disponível (total − comprometido), somando todos os lotes. Ver [Carteira](#carteira-licitante).
+- **Anti-sniping:** lance nos últimos 2 minutos empurra o fim para 2 minutos depois do lance, sem limite de prorrogações. Ver [Lances](#lances).
+- **Liquidação:** no fim, o vencedor paga, o leiloeiro recebe e nasce o comprovante público. Ver [Liquidação e comprovante](#liquidação-e-comprovante).
+- **Cancelamento:** só o leiloeiro dono, com motivo, antes do fim e **sem lances**. Como não há lance, não há saldo preso nem estorno. Ver [Lotes](#lotes).
+- **Uma obra, um lote:** a mesma obra não fica em dois lotes ativos ou arrematados. Ver [Lotes](#lotes).
+- **Histórico à prova de adulteração:** cadeia de hash selada, conferida a cada acesso. Ver [Auditoria](#auditoria).
 
 ## Rodar localmente
 
@@ -13,31 +49,58 @@ cp .env.example .env   # opcional: o Compose tem valores padrão de desenvolvime
 docker compose up --build
 ```
 
-Sobe o PostgreSQL, roda `prisma migrate deploy` + seed (serviço `migrate`) e depois a API em http://localhost:3333.
+Sobe o PostgreSQL 18 (porta 5432, banco `stonebid`, usuário e senha `postgres`), roda `prisma migrate deploy` + seed (serviço `migrate`, que termina) e depois a API em http://localhost:3333, com a MCP ligada. No Compose o `DATABASE_URL` é fixo no `docker-compose.yml` (host `db`); os segredos vêm do `.env`, se existir, ou dos padrões de desenvolvimento do arquivo. Conferir: `curl http://localhost:3333/health` → `{"status":"ok"}`.
 
 ### Sem Compose
 
-Requisitos: Node 22+ e um PostgreSQL acessível.
+Requisitos: Node 22+ e um PostgreSQL acessível (o CI usa o 18).
 
 ```bash
-cp .env.example .env          # ajuste DATABASE_URL, JWT_SECRET, MCP_API_KEY
+cp .env.example .env          # ajuste DATABASE_URL, JWT_SECRET, SEAL_SECRET, PSEUDONYM_SECRET, MCP_API_KEY
+createdb -U postgres stonebid # se o banco ainda não existir
 npm install                   # roda prisma generate no postinstall
 npx prisma migrate deploy     # ou npm run db:migrate em desenvolvimento
 npm run db:seed               # reexecutável (upsert)
 npm run dev                   # http://localhost:3333
 ```
 
+**Banco:** o app lê só o `DATABASE_URL` (formato `postgresql://usuario:senha@host:5432/banco`). Os segredos precisam de pelo menos 32 caracteres (`openssl rand -hex 32`); com `MCP_ENABLED=true`, `MCP_API_KEY` e `SEED_PASSWORD` também são obrigatórias. Valor inválido derruba a subida com a lista do que falta.
+
+## Testes
+
+```bash
+createdb -U postgres stonebid_test   # uma vez; com o Compose: docker compose exec db createdb -U postgres stonebid_test
+npm test                             # unitários + E2E (Vitest)
+npm run lint && npm run format:check && npm run typecheck
+```
+
+Os E2E sobem a aplicação com `buildApp()` e usam um PostgreSQL de verdade, por padrão `postgresql://postgres:postgres@localhost:5432/stonebid_test` (troque com `DATABASE_URL_TEST`). Antes da suíte, `test/global-setup.ts` aplica as migrations, roda o seed e apaga só o que testes anteriores criaram. Os arquivos rodam um de cada vez, porque dividem o banco. Nenhum teste chama a API real de itens: um servidor local imita a AIC (busca, item, imagem, queda e lentidão) e passa pelo adaptador de verdade.
+
+Testes de aceite (T-xx), marcados no nome do `describe`/`it`:
+
+| Teste | O que prova                                                                                | Onde                                                                |
+| ----- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| T-01  | Regras do lance: mínimo, líder, agendado, encerrado, instante do fim, cancelado, saldo     | `test/unit/bid-rules.test.ts`, `test/e2e/place-bid.test.ts`         |
+| T-02  | Concorrência: 12 lances simultâneos no mesmo lote, sem corrida                             | `test/e2e/place-bid.test.ts`                                        |
+| T-03  | Saldo comprometido entre lotes (o exemplo da Ana, passos 1 a 5)                            | `test/e2e/place-bid.test.ts`                                        |
+| T-04  | Anti-sniping, puro e com banco                                                             | `test/unit/settlement-rules.test.ts`, `test/e2e/settlement.test.ts` |
+| T-05  | Liquidação: vencedor, crédito do leiloeiro, comprovante, idempotência                      | `test/e2e/settlement.test.ts`                                       |
+| T-06  | Auditoria: adulteração por SQL direto em cada ponto da cadeia, do comprovante e do extrato | `test/e2e/audit.test.ts`, `test/unit/lot-audit.test.ts`             |
+| T-07  | API externa fora do ar: vitrine, detalhe, imagem e comprovante seguem de pé                | `test/e2e/lots.test.ts`, `test/e2e/receipts-and-my-bids.test.ts`    |
+| T-08  | Papéis e posse: leiloeiro não dá lance, só o dono cancela                                  | `test/e2e/bids.test.ts`, `test/e2e/lots.test.ts`                    |
+| T-09  | Privacidade: respostas públicas só com pseudônimo, sem nome, e-mail nem id do usuário      | `test/e2e/bids.test.ts`, `audit.test.ts`, `receipts-and-my-bids…`   |
+| T-10a | Cancelamento × lance ao mesmo tempo: só um passa                                           | `test/unit/bid-rules.test.ts`, `test/e2e/place-bid.test.ts`         |
+| T-11  | Idempotência: mesma `Idempotency-Key` repetida ou em paralelo gera um depósito ou lance só | `test/e2e/wallet.test.ts`, `test/e2e/place-bid.test.ts`             |
+
 ## Scripts
 
-| Script                                                                 | O que faz                                                                                                                                    |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run dev`                                                          | Servidor com recarga (tsx watch)                                                                                                             |
-| `npm run build` / `npm run start:prod`                                 | Bundle em `dist/` / só o servidor (sem migração)                                                                                             |
-| `npm run lint` · `npm run format:check` · `npm run typecheck`          | Qualidade                                                                                                                                    |
-| `npm test`                                                             | Testes E2E (Vitest). Aplica as migrations no banco de teste (`stonebid_test`), roda o seed e limpa os usuários criados por testes anteriores |
-| `npm run db:migrate` · `npm run db:migrate:deploy` · `npm run db:seed` | Banco                                                                                                                                        |
-
-Os testes usam `postgresql://postgres:postgres@localhost:5432/stonebid_test` por padrão; troque com `DATABASE_URL_TEST`. Os testes não chamam a API real de itens: um servidor local imita a AIC (busca, item, imagem, queda e lentidão) e passa pelo adaptador de verdade.
+| Script                                                                 | O que faz                                                                         |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `npm run dev`                                                          | Servidor com recarga (tsx watch)                                                  |
+| `npm run build` / `npm run start:prod`                                 | Bundle em `dist/` / só o servidor (sem migração)                                  |
+| `npm run lint` · `npm run format:check` · `npm run typecheck`          | Qualidade                                                                         |
+| `npm test`                                                             | Testes unitários e E2E (Vitest), no banco `stonebid_test` (ver [Testes](#testes)) |
+| `npm run db:migrate` · `npm run db:migrate:deploy` · `npm run db:seed` | Banco                                                                             |
 
 ## Variáveis de ambiente
 
@@ -75,6 +138,26 @@ Sessão por JWT no cabeçalho `Authorization: Bearer <token>`, válido por 7 dia
 
 `user` = `{ id, name, email, role }`. Todo erro segue `{ "error": { "code": "STRING", "message": "texto em pt-BR" } }`. Papel errado em rota protegida por `requireRole` → 403 `FORBIDDEN`.
 
+## Dados de teste (seed)
+
+`npm run db:seed` (ou o serviço `migrate` do Compose, ou o Cloud Run Job do deploy) cria tudo abaixo. Não usa rede. Senha dos três usuários: valor de `SEED_PASSWORD` (`stonebid123` no `.env.example` e nos ambientes no ar).
+
+| E-mail                     | Papel      |
+| -------------------------- | ---------- |
+| `leiloeiro@stonebid.dev`   | AUCTIONEER |
+| `licitante-1@stonebid.dev` | BIDDER     |
+| `licitante-2@stonebid.dev` | BIDDER     |
+
+Os licitantes começam com um depósito de R$ 5.000,00 (chave `seed-deposit-<email>`: rodar o seed de novo não duplica).
+
+O seed também cria três lotes do `leiloeiro` (obras fictícias, `externalId` `seed-1` a `seed-3`) (imagens em `prisma/seed-assets/`, sem rede): um ao vivo até 14 dias depois da primeira execução, um agendado para 1 dia depois e um encerrado com lances e comprovante. Rodar de novo atualiza os dados mas não mexe nas datas.
+
+No lote ao vivo, o seed dá três lances pelo mesmo caso de uso da API (R$ 500,00 do `licitante-1`, R$ 550,00 do `licitante-2` e R$ 600,00 do `licitante-1`), com chaves `seed-bid-1` a `seed-bid-3`: rodar de novo não duplica. Se o lote já encerrou ou recebeu lances maiores, o seed pula o lance e segue.
+
+No lote encerrado, o seed dá três lances com o relógio injetado dentro da janela gravada do lote (R$ 300,00 do `licitante-2`, R$ 325,00 do `licitante-1` e R$ 350,00 do `licitante-2`, chaves `seed-ended-bid-1` a `seed-ended-bid-3`) e liquida o lote pelo próprio caso de uso no instante do fim: o `licitante-2` vence e o lote tem comprovante. A liquidação é idempotente.
+
+A migration `20261030110000_reset_bids_pseudonym_6` apagou, uma vez, os lances e os movimentos `COMMIT`/`RELEASE` ligados a lance e zerou a cabeça dos lotes, porque o pseudônimo passou a 6 dígitos e entra no hash (com o aval do humano em 2026-10-30). Usuários, lotes e depósitos ficaram; o seed refaz os lances.
+
 ## Carteira (licitante)
 
 Saldo simulado em **centavos inteiros**. O saldo não é guardado: é derivado do extrato `wallet_movements`, que é só de inserção (nunca update nem delete). Cada movimento tem valor positivo; o sinal vem do tipo:
@@ -102,7 +185,7 @@ Rotas protegidas usam `Authorization: Bearer <token>`. Valores em **centavos int
 | Rota                                   | Quem            | Sucesso                                                                                                  | Erros                                                                                                                                                                 |
 | -------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /items/search?q=&page=`           | AUCTIONEER      | 200 `{ items: [{ externalId, title, imageUrl, attributes, auction }], page, totalPages }`                | 502 `EXTERNAL_API_UNAVAILABLE`                                                                                                                                        |
-| `GET /items/images/:imageId/thumbnail` | público         | 200 miniatura (400 px) baixada pelo servidor no IIIF, `Cache-Control: public, max-age=604800, immutable` | 400 `VALIDATION_ERROR` (id não é UUID), 404 `ITEM_NOT_FOUND`, 502 `EXTERNAL_API_UNAVAILABLE`                                                                          |
+| `GET /items/images/:imageId/thumbnail` | público         | 200 miniatura (400 px) baixada pelo servidor no IIIF, `Cache-Control: public, max-age=604800, immutable` | 400 `VALIDATION_ERROR` (id não é UUID), 404 `ITEM_NOT_FOUND`, 429 `TOO_MANY_REQUESTS` (120/min por IP), 502 `EXTERNAL_API_UNAVAILABLE`                                |
 | `POST /lots`                           | AUCTIONEER      | 201 `lot`                                                                                                | 400 `VALIDATION_ERROR`, 404 `ITEM_NOT_FOUND`, 409 `ITEM_ALREADY_AUCTIONED`, 422 `ITEM_IMAGE_TOO_LARGE`, 502 `EXTERNAL_API_UNAVAILABLE`                                |
 | `GET /lots`                            | público         | 200 `{ serverTime, live, scheduled, ended }`                                                             |                                                                                                                                                                       |
 | `GET /lots/:id`                        | público         | 200 `{ serverTime, lot }` (cancelado também)                                                             | 404 `LOT_NOT_FOUND`                                                                                                                                                   |
@@ -206,7 +289,7 @@ Disparo: um agendador de 5 s no processo (`server.ts`, desligado nos testes) liq
 
 `GET /me/bids` (só `BIDDER`) → `{ serverTime, items: [{ lot, myMaxBidCents, position, receiptPublicId }] }`: os lotes em que o licitante deu lance, do lance mais recente dele ao mais antigo. `position` é `LEADING` ou `OUTBID` (ao vivo), `WON` ou `LOST` (encerrado) e `CANCELED`; `receiptPublicId` só em `WON`.
 
-### API externa de itens (Art Institute of Chicago)
+## API externa de itens (Art Institute of Chicago)
 
 Só a busca do painel (`GET /items/search`), a miniatura da busca (`GET /items/images/:imageId/thumbnail`) e a criação do lote chamam a API. Ao criar o lote, título, atributos e **a imagem** são copiados para o PostgreSQL; vitrine, detalhe e imagem nunca chamam a API, então seguem de pé se ela cair.
 
@@ -214,34 +297,21 @@ Só a busca do painel (`GET /items/search`), a miniatura da busca (`GET /items/i
 - Limite da AIC: 60 requisições por minuto por IP (anônimo). A busca guarda resultados por 5 minutos em memória.
 - Dados em CC0. Só entram obras com imagem e em domínio público (`is_public_domain`), como a AIC recomenda para uso de imagens.
 - Imagem pelo IIIF, no tamanho padrão de 843 px: `{iiif_url}/{image_id}/full/843,/0/default.jpg`.
-- Falha de rede, timeout (`ITEMS_API_TIMEOUT_MS`) ou resposta inválida → 502 `EXTERNAL_API_UNAVAILABLE` com mensagem em português, e nada é gravado.
-
-## Usuários de teste (seed)
-
-Senha: valor de `SEED_PASSWORD` (`stonebid123` no `.env.example`).
-
-| E-mail                     | Papel      |
-| -------------------------- | ---------- |
-| `leiloeiro@stonebid.dev`   | AUCTIONEER |
-| `licitante-1@stonebid.dev` | BIDDER     |
-| `licitante-2@stonebid.dev` | BIDDER     |
-
-Os licitantes começam com um depósito de R$ 5.000,00 (chave `seed-deposit-<email>`: rodar o seed de novo não duplica).
-
-O seed também cria três lotes do `leiloeiro` (imagens em `prisma/seed-assets/`, sem rede): um ao vivo até 14 dias depois da primeira execução, um agendado para 1 dia depois e um encerrado com lances e comprovante. Rodar de novo atualiza os dados mas não mexe nas datas.
-
-No lote ao vivo, o seed dá três lances pelo mesmo caso de uso da API (R$ 500,00 do `licitante-1`, R$ 550,00 do `licitante-2` e R$ 600,00 do `licitante-1`), com chaves `seed-bid-1` a `seed-bid-3`: rodar de novo não duplica. Se o lote já encerrou ou recebeu lances maiores, o seed pula o lance e segue.
-
-No lote encerrado, o seed dá três lances com o relógio injetado dentro da janela gravada do lote (R$ 300,00 do `licitante-2`, R$ 325,00 do `licitante-1` e R$ 350,00 do `licitante-2`, chaves `seed-ended-bid-1` a `seed-ended-bid-3`) e liquida o lote pelo próprio caso de uso no instante do fim: o `licitante-2` vence e o lote tem comprovante. A liquidação é idempotente.
-
-A migration `20261030110000_reset_bids_pseudonym_6` apagou, uma vez, os lances e os movimentos `COMMIT`/`RELEASE` ligados a lance e zerou a cabeça dos lotes, porque o pseudônimo passou a 6 dígitos e entra no hash (com o aval do humano em 2026-10-30). Usuários, lotes e depósitos ficaram; o seed refaz os lances.
+- Falha de rede, timeout (`ITEMS_API_TIMEOUT_MS`, 5 s), 5xx ou resposta inválida → 502 `EXTERNAL_API_UNAVAILABLE` com mensagem em português, e nada é gravado. Não há nova tentativa automática: o painel mostra o erro e o leiloeiro tenta de novo.
+- A imagem do lote tem teto de `LOT_IMAGE_MAX_BYTES` (2 MB): maior que isso → 422 `ITEM_IMAGE_TOO_LARGE`, e o lote não é criado.
+- Miniaturas da busca: cache em memória por instância (até 300 imagens, 32 MB, 24 h; só sucesso entra) e limite de 120 requisições por minuto por IP (429 `TOO_MANY_REQUESTS`, com `retry-after`).
+- Se o banco falhar ao montar a situação das obras (`auction`), a busca responde assim mesmo, com `auction: null`; a criação do lote confere de novo, com a obra travada.
+- Testado com a AIC fora do ar (T-07) e lenta (timeout), por um servidor que imita a AIC.
 
 ## Camada MCP
 
-Com `MCP_ENABLED=true`, a API expõe um servidor MCP (Streamable HTTP, sessão por `mcp-session-id`) em `/mcp`. Toda requisição exige `MCP_API_KEY` em `x-api-key` ou `Authorization: Bearer`; sem ela, 401. Desligada em produção.
+Com `MCP_ENABLED=true`, a API expõe um servidor MCP (Streamable HTTP, sessão por `mcp-session-id`) em `/mcp`. Toda requisição exige `MCP_API_KEY` em `x-api-key` ou `Authorization: Bearer` (comparação em tempo constante); sem ela ou errada, 401 `UNAUTHORIZED`. Ligada em local e staging (`MCP_ENABLED=true` no `cd.yml` e no Compose); em produção está desligada e a rota `/mcp` não existe (404).
 
 ```bash
+# local (Compose: chave padrão local-mcp-api-key-change-me, ou a do seu .env)
 claude mcp add --transport http stonebid http://localhost:3333/mcp --header "x-api-key: <chave>"
+# staging (a chave fica no Secret Manager, MCP_API_KEY_STAGING)
+claude mcp add --transport http stonebid-staging https://stonebid-api-staging-7idhzkkvpq-rj.a.run.app/mcp --header "x-api-key: <chave>"
 ```
 
 | Tool               | Rota                      | Observação                                                                          |
@@ -266,7 +336,46 @@ claude mcp add --transport http stonebid http://localhost:3333/mcp --header "x-a
 | `bids_list`        | `GET /lots/:id/bids`      | `{ id }`; público                                                                   |
 | `bids_mine`        | `GET /me/bids`            | Licitante (sessão de `entrar`)                                                      |
 
-As tools chamam as rotas reais com `app.inject()` (validação, auth e erros de verdade). Cada rota nova ganha a sua tool em `src/infra/mcp/tools/`.
+As tools chamam as rotas reais com `app.inject()` (validação, auth e erros de verdade). Cada rota nova ganha a sua tool em `src/infra/mcp/tools/`. O token de `entrar` vive só na sessão MCP, em memória.
+
+## Privacidade
+
+- **Pseudônimo por lote:** em toda resposta pública o licitante é `"Licitante " + 6 hexadecimais` de `HMAC-SHA256(PSEUDONYM_SECRET, "pseudonym:v1" + lotId + bidderId)`. É estável dentro do lote e muda de um lote para outro, então não dá para seguir um licitante entre lotes. Sem o segredo, não se volta do pseudônimo ao usuário.
+- **O que nunca sai em rota pública** (lote, lances, SSE, auditoria, comprovante): id, nome e e-mail de usuário, hash de senha, selo e dados do leiloeiro. A auditoria mostra `prevHash` e `hash`, que só servem para recalcular a cadeia. Coberto pelo T-09.
+- **Pseudônimo próprio:** o licitante logado vê o seu em `viewer.pseudonym` no `GET /lots/:id`, para se reconhecer no histórico.
+- Senhas com bcrypt; o segredo do pseudônimo é separado do segredo dos selos.
+
+## CI/CD
+
+```
+branch → PR → CI → merge em staging → CD publica o staging → PR staging → main → CI → CD publica a produção
+```
+
+- **CI** (`.github/workflows/ci.yml`, em todo push e PR): `npm ci`, lint, Prettier, typecheck, `prisma migrate deploy` e `npm test` num PostgreSQL 18 de serviço, e `npm run build`.
+- **CD** (`.github/workflows/cd.yml`): roda quando o CI de um **push** em `main` ou `staging` termina verde. Builda a imagem Docker, envia ao Artifact Registry, roda migração + seed num Cloud Run Job e publica no Cloud Run (`stonebid-api` na `main`, `stonebid-api-staging` na `staging`). Autenticação no GCP por Workload Identity Federation, sem chave de conta de serviço; segredos no Secret Manager.
+- **Diferenças:** produção com 1 instância sempre ligada e MCP desligada; staging com 0 instâncias mínimas (dorme sem uso) e MCP ligada. Os dois com `--max-instances=1` (ver [Tempo real](#tempo-real-sse)).
+- Configuração do GCP e da Vercel do zero: [`infra/deploy-guide.md`](infra/deploy-guide.md) e `infra/gcp-setup.sh`.
+
+## Comportamentos inesperados e limites
+
+O que o código faz de propósito e pode surpreender:
+
+- **Status `ENDED` antes do resultado.** O lote vira `ENDED` no instante do fim, mas `result` fica `null` até a liquidação: até 5 s em produção (agendador) ou até a próxima leitura que liquida (`GET /lots`, `GET /lots/:id`, auditoria, `GET /auctioneer/lots`, `GET /me/bids`). No staging, que dorme, o agendador só roda enquanto houver requisição. `GET /lots/:id/bids` não liquida.
+- **Lance no instante exato do fim é recusado** (`LOT_ENDED`), e o anti-sniping não tem teto: um lote disputado pode se estender indefinidamente. `originalEndsAt` guarda o fim original.
+- **Quem lidera não pode subir o próprio lance** (`ALREADY_WINNING`).
+- **Cancelamento só sem lances.** Não existe estorno, porque não há saldo preso num lote sem lances. Lote com lances vai até o fim.
+- **Teto por depósito, não por saldo.** `DEPOSIT_LIMIT_CENTS` limita cada depósito; vários depósitos somam sem teto. Não há saque.
+- **Cadeia vazia é `INTACT`.** Apagar todos os lances de um lote não liquidado e zerar a cabeça, o lance atual e o líder passa na auditoria (ver [Auditoria](#auditoria)). Quem tem o banco e o `SEAL_SECRET`, ou um backup antigo, também forja um histórico que passa.
+- **Comprovante adulterado responde 404**, igual a inexistente, e não um aviso de adulteração; quem quiser o veredito abre a auditoria do lote.
+- **Trocar segredos quebra o passado:** novo `SEAL_SECRET` faz todo lote com lances dar `TAMPERED`; novo `PSEUDONYM_SECRET` muda os pseudônimos e também quebra os hashes.
+- **Pseudônimo de 6 hexadecimais** (24 bits): dois licitantes no mesmo lote podem, com chance remota, ter o mesmo pseudônimo.
+- **Uma instância só.** O tempo real (SSE), o limite de requisições, os caches da AIC e as sessões MCP vivem na memória do processo. Reinício derruba as sessões MCP (o cliente recebe 400 `MCP_SESSION_REQUIRED` e precisa de um `initialize` novo) e esvazia os caches.
+- **Cache da busca:** resultados da AIC ficam 5 min em memória; ao chegar a 200 buscas guardadas, o cache inteiro é esvaziado.
+- **A obra é copiada na criação do lote.** Título, atributos e imagem não acompanham mudanças posteriores na AIC.
+- **Vitrine encerrada mostra só os 30** lotes de fim mais recente; cancelados não aparecem na vitrine (só no painel do leiloeiro e por link direto).
+- **Cadastro escolhe o papel:** `POST /auth/register` aceita `AUCTIONEER` ou `BIDDER` de quem pedir. Login e cadastro não têm limite de tentativas.
+- **JWT sem revogação:** vale 7 dias e não há logout no servidor; sair é apagar o token no cliente.
+- **O seed roda em todo deploy** e reescreve nome, papel e senha dos três usuários de teste. O lote ao vivo do seed encerra 14 dias depois da primeira execução e não renasce (as datas só são calculadas na primeira criação); depois disso ele não recebe lances novos.
 
 ## Estrutura
 
@@ -285,6 +394,9 @@ src/
 ├── types/
 ├── app.ts
 └── server.ts
-prisma/                  # schema, migrations, seed
-test/e2e/
+prisma/                  # schema, migrations, seed e imagens do seed (seed-assets/)
+infra/                   # guia de deploy e script do GCP
+test/
+├── unit/                # regras puras (lance, anti-sniping, auditoria, cadeia, caches)
+└── e2e/                 # rotas com banco real e AIC simulada
 ```
