@@ -17,4 +17,9 @@ export interface ItemCatalog {
   findById(externalId: string): Promise<CatalogItem | null>;
   /** Baixa a imagem do item. Acima de `maxBytes` → ItemImageTooLargeError. */
   downloadImage(imageUrl: string, maxBytes: number): Promise<ItemImage>;
+  /**
+   * Miniatura de uma imagem pelo id (busca do painel, RF-20). O servidor monta a URL: nunca
+   * recebe URL do cliente. `null` se a API externa não tem a imagem.
+   */
+  downloadThumbnail(imageId: string): Promise<ItemImage | null>;
 }

@@ -15,7 +15,8 @@ export function registerItemsTools(
       title: 'Buscar itens na API externa',
       description:
         'GET /items/search?q=&page=: busca obras com imagem no Art Institute of Chicago. ' +
-        'Só leiloeiro (entre como leiloeiro antes). Use o externalId do resultado em lots_create.',
+        'Só leiloeiro (entre como leiloeiro antes). Use o externalId do resultado em lots_create. ' +
+        'O imageUrl de cada item é relativo à API (GET /items/images/{imageId}/thumbnail, público).',
       inputSchema: searchItemsInputSchema.shape,
     },
     async ({ q, page }) => {

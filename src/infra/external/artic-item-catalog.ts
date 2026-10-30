@@ -9,6 +9,8 @@ import { ItemImageTooLargeError } from '../../domain/errors/item-image-too-large
  * - Anônimo: até 60 requisições/minuto por IP. A busca guarda resultados por alguns minutos.
  * - Dados em CC0; imagens só de obras em domínio público (`is_public_domain`), como a AIC recomenda.
  * - Imagem pelo IIIF: `{iiif_url}/{image_id}/full/843,/0/default.jpg` (843 px é o tamanho em cache).
+ * - Miniatura da busca: `{iiif_url}/{image_id}/full/400,/0/default.jpg`, baixada pelo servidor,
+ *   porque o navegador recebe o desafio anti-robô da Cloudflare no IIIF e o `<img>` falha.
  */
 export interface ArticItemCatalogOptions {
   apiBaseUrl: string;
@@ -39,6 +41,13 @@ const FIELDS = [
 /** A AIC não devolve mais que 10.000 resultados por busca. */
 const MAX_RESULTS = 10_000;
 const SEARCH_CACHE_MAX_ENTRIES = 200;
+
+/** Id de imagem da AIC: UUID (8-4-4-4-12 hexadecimais). Só ele entra na URL do IIIF. */
+export const IMAGE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Largura da miniatura no IIIF. */
+const THUMBNAIL_WIDTH = 400;
+/** Teto da miniatura (uma de 400 px tem dezenas de KB). */
+const THUMBNAIL_MAX_BYTES = 1024 * 1024;
 
 interface ArticArtwork {
   id: number;
@@ -141,6 +150,46 @@ export class ArticItemCatalog implements ItemCatalog {
     return { data, contentType };
   }
 
+  async downloadThumbnail(imageId: string): Promise<ItemImage | null> {
+    if (!IMAGE_ID_PATTERN.test(imageId)) return null;
+    const base = this.options.iiifBaseUrl.replace(/\/+$/, '');
+    const url = `${base}/${imageId.toLowerCase()}/full/${THUMBNAIL_WIDTH},/0/default.jpg`;
+
+    const response = await this.request(url, 'image/*');
+    if (response.status === 404) {
+      await response.body?.cancel();
+      return null;
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new ExternalApiUnavailableError(
+        'Não foi possível baixar a miniatura na API de itens. Tente de novo em instantes.',
+      );
+    }
+
+    const contentType = response.headers.get('content-type')?.split(';')[0]?.trim() ?? '';
+    if (!contentType.startsWith('image/')) {
+      await response.body?.cancel();
+      throw new ExternalApiUnavailableError('A API de itens devolveu uma imagem inválida.');
+    }
+
+    let data: Uint8Array;
+    try {
+      data = await readLimited(response, THUMBNAIL_MAX_BYTES);
+    } catch (error) {
+      if (error instanceof ItemImageTooLargeError) {
+        throw new ExternalApiUnavailableError(
+          'A API de itens devolveu uma miniatura grande demais.',
+        );
+      }
+      throw error;
+    }
+    if (data.byteLength === 0) {
+      throw new ExternalApiUnavailableError('A API de itens devolveu uma imagem vazia.');
+    }
+    return { data, contentType };
+  }
+
   /** GET JSON na API; 404 → null; rede, timeout, 5xx ou JSON inválido → ExternalApiUnavailableError. */
   private async getJson<T>(path: string): Promise<T | null> {
     const response = await this.request(`${this.options.apiBaseUrl}${path}`, 'application/json');
@@ -175,6 +224,7 @@ const invalidResponse =
 
 function toCatalogItem(artwork: ArticArtwork, iiifBase: string): CatalogItem | null {
   if (!artwork.image_id || artwork.is_public_domain === false) return null;
+  if (!IMAGE_ID_PATTERN.test(artwork.image_id)) return null;
   const attributes: ItemAttributes = {
     artist: clean(artwork.artist_display),
     date: clean(artwork.date_display),
@@ -185,6 +235,7 @@ function toCatalogItem(artwork: ArticArtwork, iiifBase: string): CatalogItem | n
   return {
     externalId: String(artwork.id),
     title: clean(artwork.title) ?? 'Sem título',
+    imageId: artwork.image_id.toLowerCase(),
     imageUrl: `${iiifBase.replace(/\/+$/, '')}/${encodeURIComponent(artwork.image_id)}/full/843,/0/default.jpg`,
     attributes,
   };

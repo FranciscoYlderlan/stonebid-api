@@ -8,11 +8,16 @@ export const MOCK_IMAGE = readFileSync(
   new URL('../../prisma/seed-assets/seed-2.png', import.meta.url),
 );
 
+/** Ids de imagem no formato da AIC (UUID). */
+export const IMG_900001 = '0a000000-0000-4000-8000-000000900001';
+export const IMG_900003 = '0a000000-0000-4000-8000-000000900003';
+export const IMG_BIG = '0a000000-0000-4000-8000-00000000b16b';
+
 export const mockArtworks = [
   {
     id: 900001,
     title: 'Paisagem simulada',
-    image_id: 'img-900001',
+    image_id: IMG_900001,
     is_public_domain: true,
     artist_display: 'Pintora Teste\nBrasil, 1850–1920',
     date_display: '1890',
@@ -24,7 +29,7 @@ export const mockArtworks = [
   {
     id: 900003,
     title: 'Retrato simulado',
-    image_id: 'img-900003',
+    image_id: IMG_900003,
     is_public_domain: true,
     artist_display: null,
     date_display: 'c. 1700',
@@ -32,7 +37,7 @@ export const mockArtworks = [
     dimensions: null,
     place_of_origin: 'Itália',
   },
-  { id: 900004, title: 'Imagem grande', image_id: 'img-big', is_public_domain: true },
+  { id: 900004, title: 'Imagem grande', image_id: IMG_BIG, is_public_domain: true },
 ];
 
 export type MockMode = 'ok' | 'down' | 'slow';
@@ -85,11 +90,14 @@ export async function startItemsApiMock(timeoutMs = 300): Promise<ItemsApiMock> 
         : json(404, { status: 404, error: 'Not found' });
     }
 
-    if (url.pathname === '/iiif/2/img-big/full/843,/0/default.jpg') {
+    if (url.pathname === `/iiif/2/${IMG_BIG}/full/843,/0/default.jpg`) {
       res.writeHead(200, { 'content-type': 'image/jpeg' });
       return res.end(Buffer.alloc(64 * 1024, 1));
     }
-    if (/^\/iiif\/2\/img-\d+\/full\/843,\/0\/default\.jpg$/.test(url.pathname)) {
+    const iiif = url.pathname.match(
+      /^\/iiif\/2\/([0-9a-f-]{36})\/full\/(843|400),\/0\/default\.jpg$/,
+    );
+    if (iiif && [IMG_900001, IMG_900003, IMG_BIG].includes(iiif[1] ?? '')) {
       return res.writeHead(200, { 'content-type': 'image/png' }).end(MOCK_IMAGE);
     }
 

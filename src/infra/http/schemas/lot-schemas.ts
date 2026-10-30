@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { IMAGE_ID_PATTERN } from '../../external/artic-item-catalog.ts';
 
 /** Teto de centavos: cabe no INTEGER do PostgreSQL (R$ 20 milhões). */
 export const MAX_CENTS = 2_000_000_000;
@@ -53,6 +54,11 @@ export const searchItemsQuerySchema = z.object({
     .min(1, 'A página começa em 1.')
     .max(1000, 'A página vai até 1000.')
     .default(1),
+});
+
+/** Id da imagem da miniatura: só UUID; o servidor monta a URL do IIIF (sem SSRF). */
+export const itemImageParamsSchema = z.object({
+  imageId: z.string().regex(IMAGE_ID_PATTERN, 'Id de imagem inválido.'),
 });
 
 export type CreateLotBody = z.infer<typeof createLotBodySchema>;
