@@ -342,6 +342,27 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
       }
     });
 
+    it('RF-40: sem corpo ou corpo que não é objeto → 400 com mensagem em português', async () => {
+      const message = 'Envie os dados do lote no corpo da requisição, em JSON.';
+      const noBody = await app.inject({
+        method: 'POST',
+        url: '/lots',
+        headers: auth(auctioneerA.token),
+      });
+      const notObject = await app.inject({
+        method: 'POST',
+        url: '/lots',
+        headers: { ...auth(auctioneerA.token), 'content-type': 'application/json' },
+        payload: '[1, 2]',
+      });
+      for (const response of [noBody, notObject]) {
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toEqual({
+          error: { code: 'VALIDATION_ERROR', message, details: [{ path: '', message }] },
+        });
+      }
+    });
+
     it('item inexistente ou sem imagem → 404 ITEM_NOT_FOUND e nada gravado', async () => {
       const before = await prisma.lot.count();
       for (const externalId of ['123456789', '900002', 'abc']) {
