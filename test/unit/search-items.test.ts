@@ -33,6 +33,11 @@ function lot(id: string, externalId: string, startsAt: string, endsAt: string): 
     endsAt: new Date(endsAt),
     canceledAt: null,
     createdAt: new Date(startsAt),
+    currentBidCents: null,
+    leaderId: null,
+    headSeq: 0,
+    headHash: null,
+    headSeal: null,
   };
 }
 

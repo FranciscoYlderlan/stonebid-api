@@ -1,6 +1,6 @@
 /**
- * Porta para saber se um lote já tem lances (RN-12, RN-19). Os lances chegam no I2:
- * até lá a implementação responde que nenhum lote tem lance.
+ * Porta para saber se um lote já tem lances (RN-19: lote encerrado com lances prende a obra).
+ * O cancelamento (RN-12) não usa esta porta: ele lê a cabeça do lote com o lote travado.
  */
 export interface LotBidsReader {
   hasBids(lotId: string): Promise<boolean>;

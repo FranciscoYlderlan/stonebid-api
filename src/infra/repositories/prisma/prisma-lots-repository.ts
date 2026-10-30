@@ -12,7 +12,7 @@ import { prisma } from './prisma-client.ts';
 const ITEM_LOCK_PREFIX = 'stonebid:lot-item:';
 
 /** Nunca carrega os bytes da imagem junto com o lote. */
-const omitImage = { imageData: true } as const;
+export const omitImage = { imageData: true } as const;
 
 export class PrismaLotsRepository implements LotsRepository {
   /**
@@ -118,18 +118,41 @@ export class PrismaLotsRepository implements LotsRepository {
     return lots.map(toLot);
   }
 
-  async cancel(id: string, now: Date): Promise<Lot | null> {
-    // Condição na própria gravação: não cancela duas vezes nem depois do fim.
-    const { count } = await prisma.lot.updateMany({
-      where: { id, canceledAt: null, endsAt: { gt: now } },
-      data: { canceledAt: now },
-    });
-    if (count === 0) return null;
-    return this.findById(id);
+  async cancel(id: string, decide: (lot: Lot) => Date): Promise<Lot | null> {
+    if (!isUuid(id)) return null;
+    return prisma.$transaction(
+      async (tx) => {
+        // Mesma trava do lance (RN-09, M-13): lances, cancelamento e fim lidos sob ela.
+        const locked = await lockLotRow(tx, id);
+        if (!locked) return null;
+        const lot = await tx.lot.findUniqueOrThrow({ where: { id }, omit: omitImage });
+        const canceledAt = decide(toLot(lot));
+        const canceled = await tx.lot.update({
+          where: { id },
+          data: { canceledAt },
+          omit: omitImage,
+        });
+        return toLot(canceled);
+      },
+      { maxWait: 10_000, timeout: 15_000 },
+    );
   }
 }
 
-function toLot(lot: Omit<PrismaLot, 'imageData'>): Lot {
+/** Cliente da transação interativa do Prisma. */
+export type PrismaTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+/**
+ * Trava a linha do lote até o fim da transação (`SELECT … FOR UPDATE`): é a serialização por lote
+ * da RN-09, usada pelo lance e pelo cancelamento. `false` se o lote não existe.
+ */
+export async function lockLotRow(tx: PrismaTx, lotId: string): Promise<boolean> {
+  const rows = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "lots" WHERE "id" = ${lotId}::uuid FOR UPDATE`;
+  return rows.length > 0;
+}
+
+export function toLot(lot: Omit<PrismaLot, 'imageData'>): Lot {
   return {
     id: lot.id,
     auctioneerId: lot.auctioneerId,
@@ -144,11 +167,16 @@ function toLot(lot: Omit<PrismaLot, 'imageData'>): Lot {
     endsAt: lot.endsAt,
     canceledAt: lot.canceledAt,
     createdAt: lot.createdAt,
+    currentBidCents: lot.currentBidCents,
+    leaderId: lot.leaderId,
+    headSeq: lot.headSeq,
+    headHash: lot.headHash,
+    headSeal: lot.headSeal,
   };
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function isUuid(value: string): boolean {
+export function isUuid(value: string): boolean {
   return UUID_REGEX.test(value);
 }

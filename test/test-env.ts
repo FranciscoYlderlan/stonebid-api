@@ -7,6 +7,8 @@ export const testEnv = {
   DATABASE_URL:
     process.env.DATABASE_URL_TEST ?? 'postgresql://postgres:postgres@localhost:5432/stonebid_test',
   JWT_SECRET: 'test-jwt-secret-with-at-least-32-characters',
+  SEAL_SECRET: 'test-seal-secret-with-at-least-32-characters',
+  PSEUDONYM_SECRET: 'test-pseudonym-secret-with-at-least-32-chars',
   CORS_ORIGIN: 'http://localhost:5173',
   SEED_PASSWORD: 'stonebid123',
   MCP_ENABLED: 'true',

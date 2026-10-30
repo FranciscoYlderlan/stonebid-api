@@ -20,6 +20,13 @@ export interface Lot {
   endsAt: Date;
   canceledAt: Date | null;
   createdAt: Date;
+  /** Lance atual (RN-04) e líder (RN-05, RN-07); `null` sem lances. */
+  currentBidCents: number | null;
+  leaderId: string | null;
+  /** Cabeça da cadeia de hash (M-12): número, hash e selo do último lance; 0 e `null` sem lances. */
+  headSeq: number;
+  headHash: string | null;
+  headSeal: string | null;
 }
 
 /** Duração mínima do lote (Q-07). */
@@ -40,4 +47,20 @@ export function getLotStatus(
   if (t < lot.startsAt.getTime()) return 'SCHEDULED';
   if (t < lot.endsAt.getTime()) return 'LIVE';
   return 'ENDED';
+}
+
+/**
+ * Decide o cancelamento (RF-22, RN-12, M-13), para lote agendado e ao vivo: devolve o motivo
+ * da recusa ou `null` se pode cancelar. Quem chama lê o lote e a hora com a linha do lote
+ * travada, na mesma serialização do lance (RN-09). Sem o OPC-2, lote com lances não cancela.
+ */
+export function getCancelRefusal(
+  lot: Pick<Lot, 'startsAt' | 'endsAt' | 'canceledAt' | 'headSeq'>,
+  now: Date,
+): string | null {
+  const status = getLotStatus(lot, now);
+  if (status === 'CANCELED') return 'O lote já está cancelado.';
+  if (status === 'ENDED') return 'O lote já foi encerrado e não pode ser cancelado.';
+  if (lot.headSeq > 0) return 'O lote já tem lances e não pode ser cancelado.';
+  return null;
 }

@@ -13,6 +13,8 @@ export type WalletMovementType = (typeof walletMovementTypes)[number];
 /** Linha do extrato (só de inserção). Dinheiro em centavos inteiros (RN-16). */
 export interface WalletMovement {
   id: string;
+  /** Ordem do extrato: sequência global crescente (estável entre movimentos do mesmo instante). */
+  seq: number;
   userId: string;
   type: WalletMovementType;
   amountCents: number;

@@ -23,6 +23,6 @@ export async function lotsRoutes(app: FastifyInstance, options: LotsRoutesOption
   app.get('/lots/:id/image', getLotImageController);
 
   app.post('/lots', auctioneerOnly, createLotController(options.catalog, options.bidsReader));
-  app.post('/lots/:id/cancel', auctioneerOnly, cancelLotController(options.bidsReader));
+  app.post('/lots/:id/cancel', auctioneerOnly, cancelLotController);
   app.get('/auctioneer/lots', auctioneerOnly, listAuctioneerLotsController);
 }
