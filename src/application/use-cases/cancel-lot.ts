@@ -3,6 +3,7 @@ import { ForbiddenError } from '../../domain/errors/forbidden-error.ts';
 import { LotNotCancelableError } from '../../domain/errors/lot-not-cancelable-error.ts';
 import { LotNotFoundError } from '../../domain/errors/lot-not-found-error.ts';
 import type { LotsRepository } from '../../domain/repositories/lots-repository.ts';
+import { type LotEventsPublisher, noLotEvents } from '../lot-events-publisher.ts';
 
 export interface CancelLotInput {
   lotId: string;
@@ -18,6 +19,7 @@ export class CancelLotUseCase {
   constructor(
     private readonly lotsRepository: LotsRepository,
     private readonly clock: () => Date = () => new Date(),
+    private readonly lotEvents: LotEventsPublisher = noLotEvents,
   ) {}
 
   async execute(input: CancelLotInput): Promise<{ lot: Lot; now: Date }> {
@@ -36,6 +38,7 @@ export class CancelLotUseCase {
       return now;
     });
     if (!canceled) throw new LotNotFoundError();
+    this.lotEvents.publish(canceled.id, 'canceled'); // depois do COMMIT (AD-04)
 
     return { lot: canceled, now };
   }

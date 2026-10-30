@@ -111,14 +111,17 @@ jobs:
           ENVS: ${{ steps.amb.outputs.envs }}
         run: |
           # --port=3333 faz o Cloud Run definir PORT=3333, a porta do app.
-          # --timeout=3600: conexões longas do tempo real (SSE/WebSocket) até 60 min.
+          # --timeout=3600: conexões longas do tempo real (SSE) até 60 min; o EventSource reconecta.
+          # --max-instances=1: o barramento do SSE é em memória (AD-04); com duas instâncias, quem
+          # assiste numa não recebe o lance dado na outra.
+          # --concurrency=1000: cada stream SSE aberto ocupa uma vaga da instância (o padrão é 80).
           gcloud run deploy "$SERVICE" \
             --image="$IMAGE" --region="$REGION" \
             --service-account="$RUNTIME_SA" \
             --add-cloudsql-instances="$CLOUDSQL_CONNECTION" \
             --set-secrets="$SECRETS" \
             --set-env-vars="$ENVS" \
-            --min-instances="$MIN" "$CPU_FLAG" \
+            --min-instances="$MIN" --max-instances=1 --concurrency=1000 "$CPU_FLAG" \
             --cpu=1 --memory=512Mi --port=3333 --timeout=3600 \
             --allow-unauthenticated --quiet
 
