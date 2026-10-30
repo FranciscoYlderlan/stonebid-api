@@ -172,9 +172,24 @@ Qualquer pessoa recalcula a cadeia de hashes a partir do histórico público; s�
 - **com lances:** o vencedor (o líder) recebe `RELEASE` + `DEBIT` do valor final, o leiloeiro recebe `CREDIT` do mesmo valor, o lote fica `result = SOLD` e nasce o comprovante. Perdedores não recebem nada: o valor deles já foi liberado quando foram superados;
 - **sem lances:** `result = NO_WINNER`, sem movimento nem comprovante.
 
-Disparo: um agendador de 5 s no processo (`server.ts`, desligado nos testes) liquida até 20 lotes vencidos por rodada, e `GET /lots/:id`, `GET /lots`, `GET /auctioneer/lots` e `GET /me/bids` liquidam na leitura os lotes vencidos que mostram (cobre o staging que dorme com `min-instances=0`). Disparo duplo é seguro: quem chega depois lê `settled_at` e não grava nada; o índice único do comprovante (`lot_id`) e um índice parcial único de `DEBIT`/`CREDIT` por lote seguram até um disparo que escape da trava. Lote liquidado não aceita lance nem cancelamento (`LOT_ENDED`).
+Disparo: um agendador de 5 s no processo (`server.ts`, desligado nos testes) liquida até 20 lotes vencidos por rodada, e `GET /lots/:id`, `GET /lots/:id/audit`, `GET /lots`, `GET /auctioneer/lots` e `GET /me/bids` liquidam na leitura os lotes vencidos que mostram (cobre o staging que dorme com `min-instances=0`). Disparo duplo é seguro: quem chega depois lê `settled_at` e não grava nada; o índice único do comprovante (`lot_id`) e um índice parcial único de `DEBIT`/`CREDIT` por lote seguram até um disparo que escape da trava. Lote liquidado não aceita lance nem cancelamento (`LOT_ENDED`).
 
 **Comprovante (`GET /receipts/:publicId`, público).** `receipt` = `{ publicId, lotId, title, imageUrl: "/lots/:id/image", finalAmountCents, settledAt, winnerPseudonym, finalHash, auditPath: "/lots/:lotId/audit" }`. O `publicId` tem 16 bytes aleatórios em base64url. O banco guarda `public_id`, `lot_id`, `winner_pseudonym`, `amount_cents`, `settled_at`, `bid_count`, `final_hash` e `seal = HMAC-SHA256(SEAL_SECRET, "receipt:v1" + todos esses campos)`; título, imagem e link da auditoria derivam do lote. Selo que não confere ou cabeça do lote diferente de `bid_count`/`final_hash` → 404, igual a inexistente. Não chama a API de itens e não tem nome, e-mail nem id de usuário.
+
+## Auditoria
+
+`GET /lots/:id/audit` (público; um JWT, se vier, é ignorado) → `{ lot, bids: [{ seq, pseudonym, amountCents, createdAt, prevHash, hash }], verdict: "INTACT" | "TAMPERED", firstInconsistency: null | { seq, reason }, checkedAt }`. Vale para lote ao vivo, encerrado, liquidado e cancelado; lote vencido é liquidado na leitura, como no `GET /lots/:id`. `lot` é o mesmo do `GET /lots/:id` com `viewer: null`; `bids` vêm em ordem de `seq`, como estão no banco (mesmo adulterados), só com o pseudônimo, sem id, nome, e-mail nem selo. Lote inexistente ou id inválido → 404 `LOT_NOT_FOUND`.
+
+**O que é conferido**, nesta ordem, parando na primeira inconsistência:
+
+1. **Cadeia** (do lance 1 ao n): numeração sem buracos (`GAP`), hash recalculado igual ao guardado (`CONTENT_CHANGED`), selo do lance (`BAD_SEAL`) e `prev_hash` igual ao hash do anterior (`BROKEN_LINK`). `seq` aponta o primeiro lance inconsistente.
+2. **Cabeça do lote:** `head_seq`, `head_hash` e `head_seal` batem com o último lance (`HEAD_MISMATCH`, `seq: null`). Pega o último lance apagado.
+3. **Comprovante:** só lote `SOLD` tem; o selo `receipt:v1` confere e `bid_count`, `final_hash`, `winner_pseudonym` e `amount_cents` são os do último lance (`RECEIPT_MISMATCH`, `seq` = n).
+4. **Liquidação × extrato:** lote `SOLD` tem um `DEBIT` só, do licitante do último lance e no valor dele; lote não arrematado não tem `DEBIT` (`SETTLEMENT_MISMATCH`, `seq` = n).
+
+**Recalculada a cada acesso (RF-61).** Nada do veredito é guardado: lote, lances, comprovante e `DEBIT` são lidos numa transação `REPEATABLE READ` (um lance que entra no meio não parece adulteração da cabeça) e conferidos de novo; a resposta vai com `Cache-Control: no-store`. A lógica é pura (`src/domain/integrity/lot-audit.ts`), testada sem banco, e o T-06 (`test/e2e/audit.test.ts`) adultera o banco por SQL direto nos cinco casos (íntegro, valor editado, lance apagado no meio, lance inserido, último lance apagado), com o lote ao vivo e depois da liquidação, mais comprovante e extrato adulterados.
+
+**Limite.** Quem tem o banco **e** o `SEAL_SECRET`, ou um backup antigo com uma cabeça anterior, ainda forja um histórico que passa; só uma âncora externa resolveria. Um `REVOKE UPDATE, DELETE ON bids` para o usuário da aplicação seria uma camada extra opcional; não está aplicado.
 
 ## Meus lances (licitante)
 
@@ -229,6 +244,7 @@ claude mcp add --transport http stonebid http://localhost:3333/mcp --header "x-a
 | `lots_create`      | `POST /lots`              | Leiloeiro                                                                           |
 | `lots_list`        | `GET /lots`               |                                                                                     |
 | `lots_get`         | `GET /lots/:id`           |                                                                                     |
+| `lots_audit`       | `GET /lots/:id/audit`     | `{ lotId }`; público, mesmo corpo da rota                                           |
 | `auctioneer_lots`  | `GET /auctioneer/lots`    | Leiloeiro; traz `totalReceivedCents`                                                |
 | `lots_cancel`      | `POST /lots/:id/cancel`   | `{ id, reason }`; leiloeiro dono                                                    |
 | `receipts_get`     | `GET /receipts/:publicId` | `{ publicId }`; público                                                             |

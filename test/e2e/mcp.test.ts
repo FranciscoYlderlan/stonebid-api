@@ -82,6 +82,7 @@ describe('camada MCP (/mcp)', () => {
       'entrar',
       'health',
       'items_search',
+      'lots_audit',
       'lots_cancel',
       'lots_create',
       'lots_get',
@@ -448,6 +449,60 @@ describe('camada MCP: tools do I3 (comprovante, meus lances, total, cancelamento
       body: { status: 'CANCELED', cancelReason: 'Obra retirada' },
     });
 
+    await client.close();
+  });
+});
+
+describe('camada MCP: auditoria do lote (I4, RF-60)', () => {
+  let app: FastifyInstance;
+  let mcpUrl: URL;
+
+  beforeAll(async () => {
+    app = await buildApp({ mcpEnabled: true });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as AddressInfo;
+    mcpUrl = new URL(`http://127.0.0.1:${port}/mcp`);
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await prisma.$disconnect();
+  });
+
+  it('lots_audit devolve o mesmo corpo de GET /lots/:id/audit; inexistente → 404', async () => {
+    const client = new Client({ name: 'stonebid-e2e', version: '0.0.0' });
+    await client.connect(
+      new StreamableHTTPClientTransport(mcpUrl, {
+        requestInit: { headers: { 'x-api-key': testEnv.MCP_API_KEY } },
+      }),
+    );
+    const lotId = '5eed0000-0000-4000-8000-000000000003';
+    const audit = await client.callTool({ name: 'lots_audit', arguments: { lotId } });
+    const payload = payloadOf(audit);
+    expect(payload.status).toBe(200);
+    expect(payload.body).toMatchObject({
+      lot: { id: lotId, result: 'SOLD', viewer: null },
+      verdict: 'INTACT',
+      firstInconsistency: null,
+    });
+    const bids = payload.body.bids as { seq: number; pseudonym: string }[];
+    expect(bids.map((bid) => bid.seq)).toEqual([1, 2, 3]);
+    expect(bids[0]?.pseudonym).toMatch(/^Licitante [0-9A-F]{6}$/);
+
+    const http = await app.inject({ method: 'GET', url: `/lots/${lotId}/audit` });
+    // Mesmo corpo; só a hora do recálculo (checkedAt) muda entre as duas leituras.
+    const withoutTime = (body: Record<string, unknown>) => ({ ...body, checkedAt: null });
+    expect(withoutTime(payload.body)).toEqual(withoutTime(http.json()));
+
+    const missing = await client.callTool({
+      name: 'lots_audit',
+      arguments: { lotId: randomUUID() },
+    });
+    expect(missing.isError).toBe(true);
+    expect(payloadOf(missing)).toMatchObject({
+      status: 404,
+      body: { error: { code: 'LOT_NOT_FOUND' } },
+    });
     await client.close();
   });
 });
