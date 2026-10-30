@@ -12,8 +12,8 @@ import {
 
 /**
  * Auditoria pública do lote (RF-60, RF-61): recalcula tudo a cada leitura, nada é guardado.
- * Ordem dos testes: a cadeia (primeiro lance inconsistente), a cabeça do lote, o comprovante e,
- * por último, a liquidação contra o extrato.
+ * Ordem dos testes: a cadeia (primeiro lance inconsistente) e a cabeça selada, o comprovante, a
+ * liquidação contra o extrato e, por último, lance atual e líder do lote contra o último lance.
  */
 
 export type AuditReason =
@@ -38,8 +38,8 @@ export interface AuditResult {
   firstInconsistency: AuditInconsistency | null;
 }
 
-/** Movimento DEBIT de liquidação do lote, como está no extrato. */
-export interface AuditDebit {
+/** Movimento de liquidação do lote (DEBIT do vencedor ou CREDIT do leiloeiro), como está no extrato. */
+export interface AuditMovement {
   userId: string;
   amountCents: number;
 }
@@ -49,18 +49,36 @@ export interface LotAuditInput {
   /** Lances como estão no banco, mesmo adulterados. */
   bids: readonly ChainBid[];
   head: ChainHead;
-  /** Resultado gravado na liquidação; `null` até liquidar. */
+  /** Lance atual e líder gravados no lote; `null` sem lances. */
+  currentBidCents: number | null;
+  leaderId: string | null;
+  /** Leiloeiro dono do lote (quem recebe o CREDIT da liquidação). */
+  auctioneerId: string;
+  /** Hora e resultado gravados na liquidação; `null` até liquidar. */
+  settledAt: Date | null;
   result: LotResult | null;
   /** Comprovante do lote, se existir. */
   receipt: Receipt | null;
   /** Movimentos DEBIT do extrato ligados ao lote. */
-  debits: readonly AuditDebit[];
+  debits: readonly AuditMovement[];
+  /** Movimentos CREDIT do extrato ligados ao lote. */
+  credits: readonly AuditMovement[];
 }
 
 const INTACT: AuditResult = { verdict: 'INTACT', firstInconsistency: null };
 
 function tampered(seq: number | null, reason: AuditReason): AuditResult {
   return { verdict: 'TAMPERED', firstInconsistency: { seq, reason } };
+}
+
+function onlyMovement(
+  movements: readonly AuditMovement[],
+  userId: string,
+  amountCents: number,
+): boolean {
+  if (movements.length !== 1) return false;
+  const [movement] = movements;
+  return movement?.userId === userId && movement.amountCents === amountCents;
 }
 
 /**
@@ -82,23 +100,41 @@ function receiptOk(input: LotAuditInput, last: ChainBid | undefined, secrets: Ch
 }
 
 /**
- * Liquidação × extrato (item 5): lote arrematado tem um DEBIT só, do licitante do último lance e
- * no valor dele; lote não arrematado não tem DEBIT.
+ * Liquidação × lances × extrato (item 5):
+ * - `settledAt` e `result` andam juntos (os dois gravados ou os dois `null`);
+ * - lote liquidado com lances é sempre `SOLD`, e `SOLD` exige lances (RN-11): trocar o resultado
+ *   para `NO_WINNER` e apagar comprovante e DEBIT não passa;
+ * - lote arrematado tem um DEBIT só, do licitante do último lance e no valor dele, e um CREDIT só,
+ *   do leiloeiro, no mesmo valor; lote não arrematado não tem nenhum dos dois.
  */
 function settlementOk(input: LotAuditInput, last: ChainBid | undefined): boolean {
-  if (input.result !== 'SOLD') return input.debits.length === 0;
-  if (last === undefined || input.debits.length !== 1) return false;
-  const [debit] = input.debits;
-  return debit?.userId === last.bidderId && debit.amountCents === last.amountCents;
+  if ((input.settledAt === null) !== (input.result === null)) return false;
+  if (input.result !== null && (input.result === 'SOLD') !== (last !== undefined)) return false;
+  if (input.result !== 'SOLD') return input.debits.length === 0 && input.credits.length === 0;
+  if (last === undefined) return false;
+  return (
+    onlyMovement(input.debits, last.bidderId, last.amountCents) &&
+    onlyMovement(input.credits, input.auctioneerId, last.amountCents)
+  );
+}
+
+/**
+ * Lance atual e líder (RN-04, RN-07): gravados na mesma transação da cabeça, são o valor e o
+ * licitante do último lance; lote sem lances não tem nenhum dos dois.
+ */
+function leaderOk(input: LotAuditInput, last: ChainBid | undefined): boolean {
+  if (last === undefined) return input.currentBidCents === null && input.leaderId === null;
+  return input.currentBidCents === last.amountCents && input.leaderId === last.bidderId;
 }
 
 export function auditLot(input: LotAuditInput, secrets: ChainSecrets): AuditResult {
   const chain = verifyChain(input.lotId, input.bids, input.head, secrets);
   if (!chain.ok) return tampered(chain.seq, chain.reason);
 
+  // Comprovante, extrato e cabeça não apontam um lance: `seq: null`.
   const last = [...input.bids].sort((a, b) => a.seq - b.seq).at(-1);
-  const lastSeq = last?.seq ?? null;
-  if (!receiptOk(input, last, secrets)) return tampered(lastSeq, 'RECEIPT_MISMATCH');
-  if (!settlementOk(input, last)) return tampered(lastSeq, 'SETTLEMENT_MISMATCH');
+  if (!receiptOk(input, last, secrets)) return tampered(null, 'RECEIPT_MISMATCH');
+  if (!settlementOk(input, last)) return tampered(null, 'SETTLEMENT_MISMATCH');
+  if (!leaderOk(input, last)) return tampered(null, 'HEAD_MISMATCH');
   return INTACT;
 }
