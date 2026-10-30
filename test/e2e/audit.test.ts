@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.ts';
 import { PlaceBidUseCase } from '../../src/application/use-cases/place-bid.ts';
+import { computeBidHash, pseudonymFor, sealBid } from '../../src/domain/integrity/bid-chain.ts';
 import { PrismaBidsRepository } from '../../src/infra/repositories/prisma/prisma-bids-repository.ts';
 import { prisma } from '../../src/infra/repositories/prisma/prisma-client.ts';
 import { PrismaWalletRepository } from '../../src/infra/repositories/prisma/prisma-wallet-repository.ts';
@@ -166,6 +167,48 @@ const tamperings: Array<{
       prisma.$executeRaw`DELETE FROM "bids" WHERE "lot_id" = ${lotId}::uuid AND "seq" = 3`,
     expected: { seq: null, reason: 'HEAD_MISMATCH' },
   },
+  {
+    name: 'selo do lance trocado',
+    tamper: (lotId) =>
+      prisma.$executeRaw`UPDATE "bids" SET "seal" = md5(random()::text)
+        WHERE "lot_id" = ${lotId}::uuid AND "seq" = 2`,
+    expected: { seq: 2, reason: 'BAD_SEAL' },
+  },
+  {
+    name: 'ligação quebrada',
+    tamper: async (lotId) => {
+      // O lance 2 é refeito por inteiro (hash e selo válidos, como de um backup de outro
+      // histórico), mas ligado a um hash que não é o do lance 1.
+      const bid = await prisma.bid.findFirstOrThrow({ where: { lotId, seq: 2 } });
+      const prevHash = 'f'.repeat(64);
+      const hash = computeBidHash({
+        lotId,
+        seq: 2,
+        pseudonym: pseudonymFor(secrets.pseudonymSecret, lotId, bid.bidderId),
+        amountCents: bid.amountCents,
+        createdAt: bid.createdAt,
+        prevHash,
+      });
+      await prisma.$executeRaw`UPDATE "bids" SET "prev_hash" = ${prevHash}, "hash" = ${hash},
+        "seal" = ${sealBid(secrets.sealSecret, hash)}
+        WHERE "lot_id" = ${lotId}::uuid AND "seq" = 2`;
+    },
+    expected: { seq: 2, reason: 'BROKEN_LINK' },
+  },
+  {
+    name: 'lance atual adulterado',
+    tamper: (lotId) =>
+      prisma.$executeRaw`UPDATE "lots" SET "current_bid_cents" = "current_bid_cents" - 100
+        WHERE "id" = ${lotId}::uuid`,
+    expected: { seq: null, reason: 'HEAD_MISMATCH' },
+  },
+  {
+    name: 'líder adulterado',
+    tamper: (lotId) =>
+      prisma.$executeRaw`UPDATE "lots" SET "leader_id" = (SELECT "bidder_id" FROM "bids"
+        WHERE "lot_id" = ${lotId}::uuid AND "seq" = 2) WHERE "id" = ${lotId}::uuid`,
+    expected: { seq: null, reason: 'HEAD_MISMATCH' },
+  },
 ];
 
 describe.each(['live', 'settled'] as const)('auditoria com o lote %s (T-06)', (stage) => {
@@ -183,23 +226,59 @@ describe.each(['live', 'settled'] as const)('auditoria com o lote %s (T-06)', (s
 });
 
 describe('auditoria depois da liquidação: comprovante e extrato (T-06)', () => {
-  it('comprovante adulterado → RECEIPT_MISMATCH no último lance', async () => {
+  it('comprovante adulterado → RECEIPT_MISMATCH sem seq', async () => {
     const { lotId } = await prepared('settled');
     await prisma.$executeRaw`UPDATE "receipts" SET "amount_cents" = "amount_cents" - 100
       WHERE "lot_id" = ${lotId}::uuid`;
 
     const { body } = await audit(lotId);
     expect(body.verdict).toBe('TAMPERED');
-    expect(body.firstInconsistency).toEqual({ seq: 3, reason: 'RECEIPT_MISMATCH' });
+    expect(body.firstInconsistency).toEqual({ seq: null, reason: 'RECEIPT_MISMATCH' });
   });
 
-  it('DEBIT do vencedor adulterado no extrato → SETTLEMENT_MISMATCH', async () => {
+  it('DEBIT do vencedor adulterado no extrato → SETTLEMENT_MISMATCH sem seq', async () => {
     const { lotId } = await prepared('settled');
     await prisma.$executeRaw`UPDATE "wallet_movements" SET "amount_cents" = "amount_cents" - 100
       WHERE "lot_id" = ${lotId}::uuid AND "type" = 'DEBIT'`;
 
     const { body } = await audit(lotId);
-    expect(body.firstInconsistency).toEqual({ seq: 3, reason: 'SETTLEMENT_MISMATCH' });
+    expect(body.firstInconsistency).toEqual({ seq: null, reason: 'SETTLEMENT_MISMATCH' });
+  });
+
+  it.each([
+    {
+      name: 'adulterado',
+      tamper: (lotId: string) =>
+        prisma.$executeRaw`UPDATE "wallet_movements" SET "amount_cents" = "amount_cents" - 100
+          WHERE "lot_id" = ${lotId}::uuid AND "type" = 'CREDIT'`,
+    },
+    {
+      name: 'apagado',
+      tamper: (lotId: string) =>
+        prisma.$executeRaw`DELETE FROM "wallet_movements"
+          WHERE "lot_id" = ${lotId}::uuid AND "type" = 'CREDIT'`,
+    },
+  ])('CREDIT do leiloeiro $name no extrato → SETTLEMENT_MISMATCH', async ({ tamper }) => {
+    const { lotId } = await prepared('settled');
+    await tamper(lotId);
+
+    const { body } = await audit(lotId);
+    expect(body.verdict).toBe('TAMPERED');
+    expect(body.firstInconsistency).toEqual({ seq: null, reason: 'SETTLEMENT_MISMATCH' });
+  });
+
+  it('resultado trocado para NO_WINNER, sem comprovante, DEBIT nem CREDIT → SETTLEMENT_MISMATCH', async () => {
+    // Sem o SEAL_SECRET: apaga o que o comprovante e o extrato provariam e declara "sem vencedor".
+    const { lotId } = await prepared('settled');
+    await prisma.$executeRaw`DELETE FROM "receipts" WHERE "lot_id" = ${lotId}::uuid`;
+    await prisma.$executeRaw`DELETE FROM "wallet_movements"
+      WHERE "lot_id" = ${lotId}::uuid AND "type" IN ('DEBIT', 'CREDIT')`;
+    await prisma.$executeRaw`UPDATE "lots" SET "result" = 'NO_WINNER' WHERE "id" = ${lotId}::uuid`;
+
+    const { body } = await audit(lotId);
+    expect(body.lot.result).toBe('NO_WINNER');
+    expect(body.verdict).toBe('TAMPERED');
+    expect(body.firstInconsistency).toEqual({ seq: null, reason: 'SETTLEMENT_MISMATCH' });
   });
 
   it('a cadeia vem antes do comprovante: lance editado e comprovante editado → CONTENT_CHANGED', async () => {

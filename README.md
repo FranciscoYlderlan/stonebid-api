@@ -184,12 +184,23 @@ Disparo: um agendador de 5 s no processo (`server.ts`, desligado nos testes) liq
 
 1. **Cadeia** (do lance 1 ao n): numeração sem buracos (`GAP`), hash recalculado igual ao guardado (`CONTENT_CHANGED`), selo do lance (`BAD_SEAL`) e `prev_hash` igual ao hash do anterior (`BROKEN_LINK`). `seq` aponta o primeiro lance inconsistente.
 2. **Cabeça do lote:** `head_seq`, `head_hash` e `head_seal` batem com o último lance (`HEAD_MISMATCH`, `seq: null`). Pega o último lance apagado.
-3. **Comprovante:** só lote `SOLD` tem; o selo `receipt:v1` confere e `bid_count`, `final_hash`, `winner_pseudonym` e `amount_cents` são os do último lance (`RECEIPT_MISMATCH`, `seq` = n).
-4. **Liquidação × extrato:** lote `SOLD` tem um `DEBIT` só, do licitante do último lance e no valor dele; lote não arrematado não tem `DEBIT` (`SETTLEMENT_MISMATCH`, `seq` = n).
+3. **Comprovante:** lote `SOLD` tem de ter um e lote não arrematado não pode ter; o selo `receipt:v1` confere e `lot_id`, `bid_count`, `final_hash`, `winner_pseudonym` e `amount_cents` são os do lote e do último lance (`RECEIPT_MISMATCH`, `seq: null`).
+4. **Liquidação × lances × extrato** (`SETTLEMENT_MISMATCH`, `seq: null`): `settled_at` e `result` andam juntos; lote liquidado com lances é sempre `SOLD` e `SOLD` exige lances (trocar o resultado para `NO_WINNER` e apagar comprovante e extrato não passa); lote `SOLD` tem um `DEBIT` só, do licitante do último lance e no valor dele, e um `CREDIT` só, do leiloeiro, no mesmo valor; lote não arrematado não tem `DEBIT` nem `CREDIT`.
+5. **Lance atual e líder:** `current_bid_cents` e `leader_id` do lote são o valor e o licitante do último lance; sem lances, os dois são `null` (`HEAD_MISMATCH`, `seq: null`: são gravados na mesma transação da cabeça e fazem parte dela).
 
-**Recalculada a cada acesso (RF-61).** Nada do veredito é guardado: lote, lances, comprovante e `DEBIT` são lidos numa transação `REPEATABLE READ` (um lance que entra no meio não parece adulteração da cabeça) e conferidos de novo; a resposta vai com `Cache-Control: no-store`. A lógica é pura (`src/domain/integrity/lot-audit.ts`), testada sem banco, e o T-06 (`test/e2e/audit.test.ts`) adultera o banco por SQL direto nos cinco casos (íntegro, valor editado, lance apagado no meio, lance inserido, último lance apagado), com o lote ao vivo e depois da liquidação, mais comprovante e extrato adulterados.
+| Motivo                | O que pegou                                                     | `seq`                     |
+| --------------------- | --------------------------------------------------------------- | ------------------------- |
+| `GAP`                 | numeração com buraco (lance apagado no meio)                    | primeiro número que falta |
+| `CONTENT_CHANGED`     | hash recalculado diferente do guardado (valor, hora, licitante) | lance adulterado          |
+| `BAD_SEAL`            | selo do lance não confere                                       | lance adulterado          |
+| `BROKEN_LINK`         | `prev_hash` diferente do hash do lance anterior                 | lance adulterado          |
+| `HEAD_MISMATCH`       | cabeça selada, lance atual ou líder diferentes do último lance  | `null`                    |
+| `RECEIPT_MISMATCH`    | comprovante ausente, sobrando ou com campo/selo errado          | `null`                    |
+| `SETTLEMENT_MISMATCH` | resultado, `DEBIT` ou `CREDIT` incoerentes com os lances        | `null`                    |
 
-**Limite.** Quem tem o banco **e** o `SEAL_SECRET`, ou um backup antigo com uma cabeça anterior, ainda forja um histórico que passa; só uma âncora externa resolveria. Um `REVOKE UPDATE, DELETE ON bids` para o usuário da aplicação seria uma camada extra opcional; não está aplicado.
+**Recalculada a cada acesso (RF-61).** Nada do veredito é guardado: lote, lances, comprovante, `DEBIT` e `CREDIT` são lidos numa transação `REPEATABLE READ` (um lance que entra no meio não parece adulteração da cabeça) e conferidos de novo; a resposta vai com `Cache-Control: no-store`. A lógica é pura (`src/domain/integrity/lot-audit.ts`), testada sem banco, e o T-06 (`test/e2e/audit.test.ts`) adultera o banco por SQL direto (íntegro, valor editado, lance apagado no meio, lance inserido, último lance apagado, selo trocado, ligação quebrada, lance atual e líder adulterados), com o lote ao vivo e depois da liquidação, mais comprovante, `DEBIT` e `CREDIT` adulterados e resultado trocado para `NO_WINNER`.
+
+**Limite.** Quem tem o banco **e** o `SEAL_SECRET`, ou um backup antigo com uma cabeça anterior, ainda forja um histórico que passa; só uma âncora externa resolveria. Também passa como `INTACT`, sem o segredo, apagar **todos** os lances de um lote ainda não liquidado e zerar a cabeça (`head_seq = 0`, `head_hash` e `head_seal` nulos) junto com lance atual e líder: uma cadeia vazia é íntegra por definição. Um `REVOKE UPDATE, DELETE ON bids` para o usuário da aplicação seria uma camada extra opcional; não está aplicado.
 
 ## Meus lances (licitante)
 
