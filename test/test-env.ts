@@ -11,4 +11,6 @@ export const testEnv = {
   SEED_PASSWORD: 'stonebid123',
   MCP_ENABLED: 'true',
   MCP_API_KEY: 'test-mcp-api-key-0123456789',
+  // Pequeno para o teste da imagem grande (a imagem simulada normal tem ~2 KB).
+  LOT_IMAGE_MAX_BYTES: '32768',
 } as const;

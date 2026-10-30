@@ -27,6 +27,16 @@ const envSchema = z
     MCP_API_KEY: z.string().min(16, 'MCP_API_KEY precisa de pelo menos 16 caracteres').optional(),
     // Teto por depósito em centavos (Q-10). Padrão: R$ 10.000,00.
     DEPOSIT_LIMIT_CENTS: z.coerce.number().int().positive().default(1_000_000),
+    // API pública de itens (AD-06): Art Institute of Chicago, sem chave.
+    ITEMS_API_BASE_URL: z.url().default('https://api.artic.edu/api/v1'),
+    ITEMS_IIIF_BASE_URL: z.url().default('https://www.artic.edu/iiif/2'),
+    ITEMS_API_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
+    // Tamanho máximo da imagem copiada para o banco ao criar o lote (padrão 2 MB).
+    LOT_IMAGE_MAX_BYTES: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(2 * 1024 * 1024),
   })
   .superRefine((env, ctx) => {
     if (!env.MCP_ENABLED) return;

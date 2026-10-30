@@ -7,6 +7,7 @@ import { buildApp } from '../../src/app.ts';
 import { prisma } from '../../src/infra/repositories/prisma/prisma-client.ts';
 import { testEnv } from '../test-env.ts';
 import { uniqueEmail } from './helpers.ts';
+import { startItemsApiMock, type ItemsApiMock } from './items-api-mock.ts';
 
 interface ToolPayload {
   status: number;
@@ -20,6 +21,7 @@ function payloadOf(result: Awaited<ReturnType<Client['callTool']>>): ToolPayload
 describe('camada MCP (/mcp)', () => {
   let app: FastifyInstance;
   let mcpUrl: URL;
+  let itemsApi: ItemsApiMock;
 
   async function connect(headers: Record<string, string>): Promise<Client> {
     const client = new Client({ name: 'stonebid-e2e', version: '0.0.0' });
@@ -29,7 +31,8 @@ describe('camada MCP (/mcp)', () => {
   }
 
   beforeAll(async () => {
-    app = await buildApp({ mcpEnabled: true });
+    itemsApi = await startItemsApiMock();
+    app = await buildApp({ mcpEnabled: true, itemCatalog: itemsApi.catalog });
     await app.listen({ port: 0, host: '127.0.0.1' });
     const { port } = app.server.address() as AddressInfo;
     mcpUrl = new URL(`http://127.0.0.1:${port}/mcp`);
@@ -37,6 +40,7 @@ describe('camada MCP (/mcp)', () => {
 
   afterAll(async () => {
     await app.close();
+    await itemsApi.close();
     await prisma.$disconnect();
   });
 
@@ -67,11 +71,17 @@ describe('camada MCP (/mcp)', () => {
     const client = await connect({ 'x-api-key': testEnv.MCP_API_KEY });
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([
+      'auctioneer_lots',
       'auth_login',
       'auth_me',
       'auth_register',
       'entrar',
       'health',
+      'items_search',
+      'lots_cancel',
+      'lots_create',
+      'lots_get',
+      'lots_list',
       'wallet_deposit',
       'wallet_get',
       'wallet_movements',
@@ -141,6 +151,75 @@ describe('camada MCP (/mcp)', () => {
       status: 401,
       body: { error: { code: 'INVALID_CREDENTIALS' } },
     });
+
+    await client.close();
+  });
+});
+
+describe('camada MCP: tools de itens e lotes', () => {
+  let app: FastifyInstance;
+  let mcpUrl: URL;
+  let itemsApi: ItemsApiMock;
+
+  beforeAll(async () => {
+    itemsApi = await startItemsApiMock();
+    app = await buildApp({ mcpEnabled: true, itemCatalog: itemsApi.catalog });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as AddressInfo;
+    mcpUrl = new URL(`http://127.0.0.1:${port}/mcp`);
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await itemsApi.close();
+    await prisma.$disconnect();
+  });
+
+  it('leiloeiro busca, cria, consulta e cancela; licitante não cancela', async () => {
+    const client = new Client({ name: 'stonebid-e2e', version: '0.0.0' });
+    await client.connect(
+      new StreamableHTTPClientTransport(mcpUrl, {
+        requestInit: { headers: { 'x-api-key': testEnv.MCP_API_KEY } },
+      }),
+    );
+    const call = async (name: string, args: Record<string, unknown> = {}) =>
+      payloadOf(await client.callTool({ name, arguments: args }));
+
+    expect((await call('items_search', { q: 'paisagem' })).status).toBe(401);
+
+    await call('entrar', { user: 'leiloeiro' });
+    const search = await call('items_search', { q: 'paisagem', page: 1 });
+    expect(search.status).toBe(200);
+    const [item] = search.body.items as { externalId: string }[];
+
+    const created = await call('lots_create', {
+      externalId: item?.externalId,
+      startingBidCents: 20_000,
+      minIncrementCents: 1_000,
+      startsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      endsAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.status).toBe('SCHEDULED');
+    const id = created.body.id as string;
+
+    const got = await call('lots_get', { id });
+    expect(got).toMatchObject({ status: 200, body: { lot: { id, status: 'SCHEDULED' } } });
+
+    const list = await call('lots_list');
+    expect((list.body.scheduled as { id: string }[]).map((lot) => lot.id)).toContain(id);
+
+    const mine = await call('auctioneer_lots');
+    expect((mine.body.items as { id: string }[]).map((lot) => lot.id)).toContain(id);
+
+    await call('entrar', { user: 'licitante-1' });
+    const forbidden = await client.callTool({ name: 'lots_cancel', arguments: { id } });
+    expect(forbidden.isError).toBe(true);
+    expect(payloadOf(forbidden).status).toBe(403);
+
+    await call('entrar', { user: 'leiloeiro' });
+    const canceled = await call('lots_cancel', { id });
+    expect(canceled).toMatchObject({ status: 200, body: { id, status: 'CANCELED' } });
 
     await client.close();
   });

@@ -1,0 +1,125 @@
+import { readFileSync } from 'node:fs';
+import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { ArticItemCatalog } from '../../src/infra/external/artic-item-catalog.ts';
+
+/** Imagem servida pelo IIIF simulado (a mesma do seed-2). */
+export const MOCK_IMAGE = readFileSync(
+  new URL('../../prisma/seed-assets/seed-2.png', import.meta.url),
+);
+
+export const mockArtworks = [
+  {
+    id: 900001,
+    title: 'Paisagem simulada',
+    image_id: 'img-900001',
+    is_public_domain: true,
+    artist_display: 'Pintora Teste\nBrasil, 1850–1920',
+    date_display: '1890',
+    medium_display: 'Óleo sobre tela',
+    dimensions: '50 × 70 cm',
+    place_of_origin: 'Brasil',
+  },
+  { id: 900002, title: 'Obra sem imagem', image_id: null, is_public_domain: true },
+  {
+    id: 900003,
+    title: 'Retrato simulado',
+    image_id: 'img-900003',
+    is_public_domain: true,
+    artist_display: null,
+    date_display: 'c. 1700',
+    medium_display: null,
+    dimensions: null,
+    place_of_origin: 'Itália',
+  },
+  { id: 900004, title: 'Imagem grande', image_id: 'img-big', is_public_domain: true },
+];
+
+export type MockMode = 'ok' | 'down' | 'slow';
+
+export interface ItemsApiMock {
+  catalog: ArticItemCatalog;
+  /** Requisições recebidas (caminho e cabeçalhos), para provar quem chama a API. */
+  requests: { url: string; headers: IncomingHttpHeaders }[];
+  setMode(mode: MockMode): void;
+  close(): Promise<void>;
+}
+
+/**
+ * Servidor que imita a API do Art Institute of Chicago e o IIIF, para testar o adaptador
+ * real (ArticItemCatalog) sem rede: busca, item por id, imagem, queda e lentidão.
+ */
+export async function startItemsApiMock(timeoutMs = 300): Promise<ItemsApiMock> {
+  let mode: MockMode = 'ok';
+  const requests: ItemsApiMock['requests'] = [];
+  let baseUrl = '';
+  const sockets = new Set<import('node:net').Socket>();
+
+  const server: Server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://mock');
+    requests.push({ url: url.pathname + url.search, headers: req.headers });
+
+    if (mode === 'slow') return; // nunca responde: o adaptador estoura o timeout
+    if (mode === 'down') {
+      res.writeHead(503, { 'content-type': 'text/plain' }).end('fora do ar');
+      return;
+    }
+
+    const config = { iiif_url: `${baseUrl}/iiif/2` };
+    const json = (status: number, body: unknown) =>
+      res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+
+    if (url.pathname === '/api/v1/artworks/search') {
+      return json(200, {
+        pagination: { total: mockArtworks.length, total_pages: 1, current_page: 1 },
+        data: mockArtworks,
+        config,
+      });
+    }
+
+    const artwork = url.pathname.match(/^\/api\/v1\/artworks\/(\d+)$/);
+    if (artwork) {
+      const found = mockArtworks.find((item) => String(item.id) === artwork[1]);
+      return found
+        ? json(200, { data: found, config })
+        : json(404, { status: 404, error: 'Not found' });
+    }
+
+    if (url.pathname === '/iiif/2/img-big/full/843,/0/default.jpg') {
+      res.writeHead(200, { 'content-type': 'image/jpeg' });
+      return res.end(Buffer.alloc(64 * 1024, 1));
+    }
+    if (/^\/iiif\/2\/img-\d+\/full\/843,\/0\/default\.jpg$/.test(url.pathname)) {
+      return res.writeHead(200, { 'content-type': 'image/png' }).end(MOCK_IMAGE);
+    }
+
+    json(404, { status: 404, error: 'Not found' });
+  });
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  baseUrl = `http://127.0.0.1:${port}`;
+
+  const catalog = new ArticItemCatalog({
+    apiBaseUrl: `${baseUrl}/api/v1`,
+    iiifBaseUrl: `${baseUrl}/iiif/2`,
+    timeoutMs,
+    searchCacheTtlMs: 0,
+  });
+
+  return {
+    catalog,
+    requests,
+    setMode: (next) => {
+      mode = next;
+    },
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}

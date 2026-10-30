@@ -2,15 +2,21 @@ import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { env } from './env/index.ts';
+import type { ItemCatalog } from './domain/catalog/item-catalog.ts';
+import { makeItemCatalog } from './infra/external/make-item-catalog.ts';
 import { registerErrorHandler } from './infra/http/errors/error-handler.ts';
 import { authRoutes } from './infra/http/routes/auth-routes.ts';
 import { healthRoutes } from './infra/http/routes/health-routes.ts';
+import { itemsRoutes } from './infra/http/routes/items-routes.ts';
+import { lotsRoutes } from './infra/http/routes/lots-routes.ts';
 import { walletRoutes } from './infra/http/routes/wallet-routes.ts';
 import { mcpPlugin } from './infra/mcp/plugin.ts';
 
 export interface BuildAppOptions {
   logger?: FastifyServerOptions['logger'];
   mcpEnabled?: boolean;
+  /** API de itens (AD-06). Padrão: Art Institute of Chicago pelo ambiente; os testes trocam. */
+  itemCatalog?: ItemCatalog;
 }
 
 /** Monta a aplicação sem escutar porta (usado pelo server.ts e pelos testes E2E). */
@@ -32,6 +38,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(healthRoutes);
   await app.register(authRoutes);
   await app.register(walletRoutes);
+
+  const catalog = options.itemCatalog ?? makeItemCatalog();
+  await app.register(itemsRoutes, { catalog });
+  await app.register(lotsRoutes, { catalog });
 
   if (options.mcpEnabled ?? env.MCP_ENABLED) {
     await app.register(mcpPlugin);
