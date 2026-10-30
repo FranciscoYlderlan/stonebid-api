@@ -72,6 +72,9 @@ describe('camada MCP (/mcp)', () => {
       'auth_register',
       'entrar',
       'health',
+      'wallet_deposit',
+      'wallet_get',
+      'wallet_movements',
     ]);
     await client.close();
   });

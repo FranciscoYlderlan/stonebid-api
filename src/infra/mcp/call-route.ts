@@ -7,6 +7,8 @@ export interface RouteCall {
   body?: unknown;
   /** Token JWT do usuário de teste (vai só no inject interno, nunca no /mcp). */
   token?: string;
+  /** Cabeçalhos extras da rota (ex.: Idempotency-Key). */
+  headers?: Record<string, string>;
 }
 
 export interface RouteResult {
@@ -19,7 +21,7 @@ export interface RouteResult {
  * tratamento de erro e serialização de verdade.
  */
 export async function callRoute(app: FastifyInstance, call: RouteCall): Promise<RouteResult> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...call.headers };
   if (call.token) headers.authorization = `Bearer ${call.token}`;
 
   const response = await app.inject({
