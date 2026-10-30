@@ -60,6 +60,24 @@ export function registerLotsTools(
   );
 
   server.registerTool(
+    'lots_audit',
+    {
+      title: 'Auditoria do lote',
+      description:
+        'GET /lots/:id/audit: auditoria pública, recalculada a cada chamada (lote vencido é ' +
+        'liquidado na leitura). Devolve o lote, os lances em ordem de seq (pseudônimo, valor, ' +
+        'hora, prevHash, hash), verdict INTACT ou TAMPERED e firstInconsistency { seq, reason } ' +
+        '(GAP, CONTENT_CHANGED, BAD_SEAL, BROKEN_LINK, HEAD_MISMATCH, RECEIPT_MISMATCH, ' +
+        'SETTLEMENT_MISMATCH). Sem dado pessoal. Lote inexistente → 404 LOT_NOT_FOUND.',
+      inputSchema: { lotId: z.string().min(1).describe('id do lote (UUID)') },
+    },
+    async ({ lotId }) =>
+      toToolResult(
+        await callRoute(app, { method: 'GET', url: `/lots/${encodeURIComponent(lotId)}/audit` }),
+      ),
+  );
+
+  server.registerTool(
     'auctioneer_lots',
     {
       title: 'Meus lotes (leiloeiro)',
