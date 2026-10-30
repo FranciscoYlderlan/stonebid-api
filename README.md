@@ -371,26 +371,26 @@ branch tipo/ID-descricao → PR para main → CI verde → merge humano na main 
 - **Diferenças:** produção com 1 instância sempre ligada e MCP desligada; staging com 0 instâncias mínimas (dorme sem uso) e MCP ligada. Os dois com `--max-instances=1` (ver [Tempo real](#tempo-real-sse)).
 - Configuração do GCP e da Vercel do zero: [`infra/deploy-guide.md`](infra/deploy-guide.md) e `infra/gcp-setup.sh`.
 
-## Comportamentos inesperados e limites
+## Características de funcionamento e limites
 
-O que o código faz de propósito e pode surpreender:
+Escolhas de projeto da API, cada uma com o motivo. Onde há um limite, ele está dito junto com o que o resolveria.
 
-- **Status `ENDED` antes do resultado.** O lote vira `ENDED` no instante do fim, mas `result` fica `null` até a liquidação: até 5 s em produção (agendador) ou até a próxima leitura que liquida (`GET /lots`, `GET /lots/:id`, auditoria, `GET /auctioneer/lots`, `GET /me/bids`). No staging, que dorme, o agendador só roda enquanto houver requisição. `GET /lots/:id/bids` não liquida.
-- **Lance no instante exato do fim é recusado** (`LOT_ENDED`), e o anti-sniping não tem teto: um lote disputado pode se estender indefinidamente. `originalEndsAt` guarda o fim original.
-- **Quem lidera não pode subir o próprio lance** (`ALREADY_WINNING`).
-- **Cancelamento só sem lances.** Não existe estorno, porque não há saldo preso num lote sem lances. Lote com lances vai até o fim.
-- **Teto por depósito, não por saldo.** `DEPOSIT_LIMIT_CENTS` limita cada depósito; vários depósitos somam sem teto. Não há saque.
-- **Cadeia vazia é `INTACT`.** Apagar todos os lances de um lote não liquidado e zerar a cabeça, o lance atual e o líder passa na auditoria (ver [Auditoria](#auditoria)). Quem tem o banco e o `SEAL_SECRET`, ou um backup antigo, também forja um histórico que passa.
-- **Comprovante adulterado responde 404**, igual a inexistente, e não um aviso de adulteração; quem quiser o veredito abre a auditoria do lote.
-- **Trocar segredos quebra o passado:** novo `SEAL_SECRET` faz todo lote com lances dar `TAMPERED`; novo `PSEUDONYM_SECRET` muda os pseudônimos e também quebra os hashes.
-- **Pseudônimo de 6 hexadecimais** (24 bits): dois licitantes no mesmo lote podem, com chance remota, ter o mesmo pseudônimo.
-- **Uma instância só.** O tempo real (SSE), o limite de requisições, os caches da AIC e as sessões MCP vivem na memória do processo. Reinício derruba as sessões MCP (o cliente recebe 400 `MCP_SESSION_REQUIRED` e precisa de um `initialize` novo) e esvazia os caches.
-- **Cache da busca:** resultados da AIC ficam 5 min em memória; ao chegar a 200 buscas guardadas, o cache inteiro é esvaziado.
-- **A obra é copiada na criação do lote.** Título, atributos e imagem não acompanham mudanças posteriores na AIC.
-- **Vitrine encerrada mostra só os 30** lotes de fim mais recente; cancelados não aparecem na vitrine (só no painel do leiloeiro e por link direto).
-- **Cadastro escolhe o papel:** `POST /auth/register` aceita `AUCTIONEER` ou `BIDDER` de quem pedir. Login e cadastro não têm limite de tentativas.
-- **JWT sem revogação:** vale 7 dias e não há logout no servidor; sair é apagar o token no cliente.
-- **O seed roda em todo deploy** e reescreve nome, papel e senha dos três usuários de teste. O lote ao vivo do seed encerra 14 dias depois da primeira execução e não renasce (as datas só são calculadas na primeira criação); depois disso ele não recebe lances novos.
+- **Resultado logo depois do fim.** O `status` vem do relógio do servidor, então o lote passa a `ENDED` no instante do fim; o `result` chega com a liquidação, um passo à parte, feito numa transação com o lote travado. Ela roda no agendador a cada 5 s e em toda leitura que mostra o lote (`GET /lots`, `GET /lots/:id`, auditoria, `GET /auctioneer/lots`, `GET /me/bids`), o que cobre o staging: ele dorme sem uso, e o agendador só roda enquanto houver requisição. `GET /lots/:id/bids` só lista os lances e não liquida.
+- **Fim exato e anti-sniping sem teto.** O fim é o primeiro instante de `ENDED`, então um lance nesse instante recebe `LOT_ENDED`. A prorrogação segue a RN-10, sem limite: enquanto houver lance nos últimos 2 minutos, o lote continua. `originalEndsAt` guarda o fim marcado na criação.
+- **Quem lidera espera ser coberto** (`ALREADY_WINNING`). Faz parte das regras do lance (RN-02 a RN-05): o próximo lance vem de outro licitante.
+- **Cancelamento só sem lances.** Assim nenhum saldo fica preso num lote cancelado e não há estorno a fazer. Lote com lances segue até o fim e é liquidado.
+- **Teto por depósito.** `DEPOSIT_LIMIT_CENTS` vale para cada depósito (Q-10); vários depósitos somam, sem teto de saldo. O saldo é simulado e não há saque.
+- **Cadeia vazia conta como `INTACT`.** A auditoria confere os lances que existem, e uma cadeia sem lances é íntegra por definição. Por isso apagar todos os lances de um lote ainda não liquidado e zerar a cabeça, o lance atual e o líder passa na auditoria; quem tem o banco e o `SEAL_SECRET`, ou um backup antigo, também forja um histórico que passa. Uma âncora externa fecharia essas brechas, e um `REVOKE UPDATE, DELETE ON bids` seria uma camada extra (ver [Auditoria](#auditoria)).
+- **Comprovante só quando confere.** `GET /receipts/:publicId` só devolve comprovante com selo válido e igual à cabeça do lote; adulterado responde 404, como inexistente. O veredito, com o motivo, fica na auditoria do lote (`auditPath`).
+- **Segredos amarram o histórico.** Os selos são HMAC com `SEAL_SECRET`, e o pseudônimo, gerado com `PSEUDONYM_SECRET`, entra no hash do lance. Por isso um novo `SEAL_SECRET` faz todo lote com lances dar `TAMPERED`, e um novo `PSEUDONYM_SECRET` muda os pseudônimos e quebra os hashes gravados.
+- **Pseudônimo de 6 hexadecimais** (24 bits). Dois licitantes no mesmo lote podem ter o mesmo pseudônimo, com chance de cerca de 1 em 16 milhões.
+- **Uma instância só.** O tempo real usa um barramento em memória, por isso o Cloud Run roda com `--max-instances=1` (ver [Tempo real](#tempo-real-sse)). O limite de requisições, os caches da AIC e as sessões MCP também vivem na memória do processo: um reinício derruba as sessões MCP (o cliente recebe 400 `MCP_SESSION_REQUIRED` e faz um `initialize` novo) e esvazia os caches. Mais instâncias pediriam outro barramento (`LISTEN/NOTIFY` ou pub/sub).
+- **Cache da busca.** Resultados da AIC ficam 5 min em memória, o que poupa o limite de 60 requisições por minuto da AIC. Ao chegar a 200 buscas guardadas, o cache é esvaziado inteiro, o que mantém a memória limitada.
+- **A obra é copiada na criação do lote.** Título, atributos e imagem vão para o PostgreSQL, então vitrine, detalhe, imagem e comprovante seguem de pé com a AIC fora do ar (T-07). Mudanças posteriores na AIC não chegam ao lote.
+- **Vitrine de encerrados com os 30 de fim mais recente.** Cancelados ficam fora da vitrine e aparecem no painel do leiloeiro e por link direto.
+- **Cadastro com papel escolhido.** `POST /auth/register` aceita `AUCTIONEER` ou `BIDDER` de quem pedir. Login e cadastro não limitam tentativas.
+- **JWT sem revogação.** O token é autocontido e o servidor não guarda sessão: ele vale 7 dias, e sair é apagar o token no cliente, sem logout no servidor.
+- **Seed em todo deploy.** O Cloud Run Job roda migração e seed a cada deploy, e o seed é reexecutável: os três usuários de teste voltam sempre com nome, papel e a senha de `SEED_PASSWORD`. As datas dos lotes do seed só são calculadas na primeira criação, para que rodar de novo não as mude; por isso o lote ao vivo do seed encerra 14 dias depois da primeira execução e, a partir daí, não recebe lances novos.
 
 ## Estrutura
 
@@ -415,3 +415,7 @@ test/
 ├── unit/                # regras puras (lance, anti-sniping, auditoria, cadeia, caches)
 └── e2e/                 # rotas com banco real e AIC simulada
 ```
+
+## Uso de IA
+
+Como usei IA neste projeto (orquestração de subagentes, memória no Obsidian e quem definiu, aplicou e refinou cada parte): [docs/uso-de-ia.md](https://github.com/FranciscoYlderlan/stonebid-web/blob/main/docs/uso-de-ia.md), no repositório `stonebid-web`.
