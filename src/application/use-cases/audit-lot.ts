@@ -18,6 +18,7 @@ export interface LotAuditSnapshot {
   receipt: Receipt | null;
   debits: AuditMovement[];
   credits: AuditMovement[];
+  refunds: AuditMovement[];
 }
 
 /** Porta de leitura da auditoria; `null` se o lote não existe. */
@@ -66,11 +67,13 @@ export class AuditLotUseCase {
         currentBidCents: snapshot.lot.currentBidCents,
         leaderId: snapshot.lot.leaderId,
         auctioneerId: snapshot.lot.auctioneerId,
+        canceledAt: snapshot.lot.canceledAt,
         settledAt: snapshot.lot.settledAt,
         result: snapshot.lot.result,
         receipt: snapshot.receipt,
         debits: snapshot.debits,
         credits: snapshot.credits,
+        refunds: snapshot.refunds,
       },
       this.secrets,
     );

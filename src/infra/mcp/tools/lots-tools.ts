@@ -68,7 +68,7 @@ export function registerLotsTools(
         'liquidado na leitura). Devolve o lote, os lances em ordem de seq (pseudônimo, valor, ' +
         'hora, prevHash, hash), verdict INTACT ou TAMPERED e firstInconsistency { seq, reason } ' +
         '(GAP, CONTENT_CHANGED, BAD_SEAL, BROKEN_LINK, HEAD_MISMATCH, RECEIPT_MISMATCH, ' +
-        'SETTLEMENT_MISMATCH). Sem dado pessoal. Lote inexistente → 404 LOT_NOT_FOUND.',
+        'SETTLEMENT_MISMATCH, CANCEL_MISMATCH). Sem dado pessoal. Lote inexistente → 404 LOT_NOT_FOUND.',
       inputSchema: { lotId: z.string().min(1).describe('id do lote (UUID)') },
     },
     async ({ lotId }) =>
@@ -120,9 +120,12 @@ export function registerLotsTools(
     {
       title: 'Cancelar lote',
       description:
-        'POST /lots/:id/cancel com { reason }: cancela um lote agendado ou ao vivo, sem lances. Só ' +
-        'o leiloeiro dono. Motivo de 3 a 280 caracteres (senão 422 VALIDATION_ERROR); encerrado ' +
-        'ou liquidado → 409 LOT_ENDED; com lances ou já cancelado → 409 LOT_NOT_CANCELABLE.',
+        'POST /lots/:id/cancel com { reason }: cancela um lote agendado ou ao vivo. Só o ' +
+        'leiloeiro dono. Com lances, o líder recebe estorno (REFUND) do lance atual e o ' +
+        'disponível dele volta; líder, lance atual e cadeia ficam como estão (com ' +
+        'CANCEL_WITH_BIDS_ENABLED=false, lote com lances → 409 LOT_NOT_CANCELABLE). Motivo de 3 a ' +
+        '280 caracteres (senão 422 VALIDATION_ERROR); encerrado ou liquidado → 409 LOT_ENDED; já ' +
+        'cancelado → 409 LOT_NOT_CANCELABLE.',
       inputSchema: {
         ...lotIdInput,
         reason: z.string().describe('motivo do cancelamento (3 a 280 caracteres)'),

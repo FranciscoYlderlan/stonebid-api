@@ -202,6 +202,16 @@ Rotas protegidas usam `Authorization: Bearer <token>`. Valores em **centavos int
 - **Vitrine:** ao vivo pelo fim mais próximo, agendados pelo início mais próximo, encerrados pelo fim mais recente (até 30). Cancelados ficam fora.
 - **Cancelamento:** só agendado ou ao vivo e sem lances, sempre com motivo (`cancelReason`, sem espaços nas pontas). Lances, fim e cancelamento anterior são lidos com a linha do lote travada, a mesma trava do lance: cancelamento e lance ao mesmo tempo, só um passa.
 
+### Estorno no cancelamento (OPC-2)
+
+Com `CANCEL_WITH_BIDS_ENABLED=true` (ligado em produção e staging pelo `cd.yml`; padrão `false`), o leiloeiro dono também cancela lote **com lances**, antes do fim e com motivo. Rota e erros não mudam: `POST /lots/:id/cancel { reason }`; com lances, o 409 `LOT_NOT_CANCELABLE` fica só para "já cancelado". Desligado, lote com lances segue recusado com 409 `LOT_NOT_CANCELABLE`.
+
+- **Na mesma transação e trava do cancelamento**, além de `canceledAt` e `cancelReason`, grava um movimento `REFUND` do líder no valor do lance atual (`lotId` do lote). Líder, lance atual e cabeça da cadeia ficam como estavam.
+- **O estorno libera o comprometido:** `comprometido = COMMIT − RELEASE − REFUND` e `total = DEPOSIT + CREDIT − DEBIT`. O total do líder não muda e o disponível volta ao de antes do lance. Superados já tinham `RELEASE` e não recebem nada; o leiloeiro também não.
+- **Concorrência:** lance e cancelamento usam a mesma trava do lote. Lance que chega antes entra no estorno; lance que chega depois recebe 409 `LOT_CANCELED`. Nenhum comprometido fica preso.
+- **Depois:** a liquidação ignora o lote, `GET /me/bids` mostra `CANCELED` e o evento SSE `canceled` avisa a sala.
+- **Auditoria:** lote cancelado com lances tem exatamente um `REFUND`, do licitante do último lance e no valor dele; qualquer outro lote, nenhum. Apagado, duplicado ou fora disso → `TAMPERED` com `CANCEL_MISMATCH`.
+
 ## Lances
 
 | Rota                  | Quem    | Entrada                                                                        | Sucesso                                                                                               |

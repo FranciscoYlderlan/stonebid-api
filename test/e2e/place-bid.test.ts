@@ -17,6 +17,8 @@ import { PrismaLotsRepository } from '../../src/infra/repositories/prisma/prisma
 import type { PrismaTx } from '../../src/infra/repositories/prisma/prisma-lots-repository.ts';
 import { PrismaWalletRepository } from '../../src/infra/repositories/prisma/prisma-wallet-repository.ts';
 import { computeBalance } from '../../src/domain/entities/wallet.ts';
+import { makeListMyBidsUseCase } from '../../src/infra/factories/make-list-my-bids-use-case.ts';
+import { makeSettleLotUseCase } from '../../src/infra/factories/make-settle-lot-use-case.ts';
 import { testEnv } from '../test-env.ts';
 import { uniqueEmail } from './helpers.ts';
 import { MOCK_IMAGE } from './items-api-mock.ts';
@@ -324,6 +326,20 @@ describe('núcleo do lance (RF-33, RN-02 a RN-09)', () => {
 
     await expectLotInvariants(a);
     await expectLotInvariants(b);
+
+    // 6. Lote B cancelado com o OPC-2: estorno de R$ 500; o total não muda e o disponível volta.
+    await new CancelLotUseCase(new PrismaLotsRepository(), undefined, undefined, true).execute({
+      lotId: b,
+      auctioneerId: auctioneerId!,
+      reason: 'Obra retirada',
+    });
+    expect(await wallet(ana)).toEqual({
+      totalCents: 100_000,
+      committedCents: 0,
+      availableCents: 100_000,
+    });
+    const [refund] = await walletRepository.listByUser(ana);
+    expect(refund).toMatchObject({ type: 'REFUND', amountCents: 50_000, lotId: b });
   });
 
   it('T-11: mesma chave = um lance só (repetida e em paralelo); chave com outro valor → 409', async () => {
@@ -460,7 +476,8 @@ describe('concorrência (T-02, RN-09, RNF-04)', () => {
 
 describe('cancelamento × lance (T-10a, M-13)', () => {
   const lotsRepository = new PrismaLotsRepository();
-  const cancelLot = () => new CancelLotUseCase(lotsRepository);
+  // T-10a: o OPC-2 desligado, de propósito (o padrão do caso de uso).
+  const cancelLot = () => new CancelLotUseCase(lotsRepository, undefined, undefined, false);
 
   it('lote ao vivo com lance: cancelamento recusado com o motivo', async () => {
     const lotId = await createLot();
@@ -522,5 +539,103 @@ describe('cancelamento × lance (T-10a, M-13)', () => {
       status: 'rejected',
       reason: { message: 'O lote já tem lances e não pode ser cancelado.' },
     });
+  });
+});
+
+describe('cancelamento com lances e estorno (T-10b, OPC-2, RF-23)', () => {
+  const lotsRepository = new PrismaLotsRepository();
+  const cancelLot = (clock?: () => Date) =>
+    new CancelLotUseCase(lotsRepository, clock, undefined, true);
+  const reason = 'Obra retirada pelo comitente';
+
+  it('líder recebe um REFUND do lance atual; superado intacto; leiloeiro nada; lote congelado', async () => {
+    const lotId = await createLot();
+    const ana = await createUser('BIDDER', 100_000);
+    const bruno = await createUser('BIDDER', 100_000);
+    await placeBid().execute(bid(lotId, ana, 10_000));
+    await placeBid().execute(bid(lotId, bruno, 20_000));
+    const anaBefore = await wallet(ana);
+    const brunoBefore = await wallet(bruno);
+    const brunoMovements = await prisma.walletMovement.count({ where: { userId: bruno } });
+
+    const { lot } = await cancelLot().execute({ lotId, auctioneerId: auctioneerId!, reason });
+
+    // Líder, lance atual e cabeça como estavam.
+    expect(lot).toMatchObject({ leaderId: bruno, currentBidCents: 20_000, headSeq: 2 });
+    expect(lot.canceledAt).not.toBeNull();
+    expect(lot.cancelReason).toBe(reason);
+    // Bruno (líder): total igual, disponível de volta ao de antes do lance.
+    expect(await wallet(bruno)).toEqual({
+      totalCents: brunoBefore.totalCents,
+      committedCents: 0,
+      availableCents: 100_000,
+    });
+    // Ana (superada, já tinha RELEASE): nada muda.
+    expect(await wallet(ana)).toEqual(anaBefore);
+    const refunds = await prisma.walletMovement.findMany({ where: { lotId, type: 'REFUND' } });
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0]).toMatchObject({ userId: bruno, amountCents: 20_000 });
+    expect(await prisma.walletMovement.count({ where: { userId: bruno } })).toBe(
+      brunoMovements + 1,
+    );
+    expect(await prisma.walletMovement.count({ where: { userId: auctioneerId! } })).toBe(0);
+
+    // Cancelar de novo: "já cancelado", sem segundo estorno.
+    await expect(
+      cancelLot().execute({ lotId, auctioneerId: auctioneerId!, reason }),
+    ).rejects.toMatchObject({ code: 'LOT_NOT_CANCELABLE', message: 'O lote já está cancelado.' });
+    expect(await prisma.walletMovement.count({ where: { lotId, type: 'REFUND' } })).toBe(1);
+    // Lance depois do cancelamento: recusado.
+    await expect(placeBid().execute(bid(lotId, ana, 30_000))).rejects.toMatchObject({
+      code: 'LOT_CANCELED',
+    });
+  });
+
+  it('cancelamento e lance ao mesmo tempo: sem comprometido preso', async () => {
+    const ana = await createUser('BIDDER', 1_000_000);
+    for (let round = 0; round < 6; round++) {
+      const lotId = await createLot();
+      const [bidOutcome, cancelOutcome] = await Promise.allSettled([
+        placeBid(new SlowBidsRepository()).execute(bid(lotId, ana, 10_000)),
+        cancelLot().execute({ lotId, auctioneerId: auctioneerId!, reason }),
+      ]);
+      // Com o OPC-2 o cancelamento sempre passa; o lance passa só se chegou antes.
+      expect(cancelOutcome.status).toBe('fulfilled');
+      const refunds = await prisma.walletMovement.count({ where: { lotId, type: 'REFUND' } });
+      if (bidOutcome.status === 'fulfilled') {
+        expect(refunds).toBe(1);
+      } else {
+        expect(bidOutcome.reason).toMatchObject({ code: 'LOT_CANCELED' });
+        expect(refunds).toBe(0);
+      }
+    }
+    // Todos os lotes cancelados: nada comprometido.
+    expect(await wallet(ana)).toEqual({
+      totalCents: 1_000_000,
+      committedCents: 0,
+      availableCents: 1_000_000,
+    });
+  });
+
+  it('liquidação ignora o lote cancelado e "meus lances" mostra CANCELED', async () => {
+    const endsAt = new Date(Date.now() + 10 * MINUTE);
+    const lotId = await createLot({ endsAt });
+    const ana = await createUser('BIDDER', 100_000);
+    await placeBid().execute(bid(lotId, ana, 10_000));
+    await cancelLot().execute({ lotId, auctioneerId: auctioneerId!, reason });
+
+    const afterEnd = new Date(endsAt.getTime() + MINUTE);
+    await makeSettleLotUseCase(() => afterEnd).execute(lotId);
+    const lot = await prisma.lot.findUniqueOrThrow({ where: { id: lotId } });
+    expect(lot.settledAt).toBeNull();
+    expect(lot.result).toBeNull();
+    expect(
+      await prisma.walletMovement.count({ where: { lotId, type: { in: ['DEBIT', 'CREDIT'] } } }),
+    ).toBe(0);
+    expect(await prisma.receipt.count({ where: { lotId } })).toBe(0);
+
+    const { items } = await makeListMyBidsUseCase().execute(ana);
+    expect(items.find((item) => item.lot.id === lotId)?.position).toBe('CANCELED');
+    expect(await wallet(ana)).toMatchObject({ committedCents: 0, availableCents: 100_000 });
   });
 });

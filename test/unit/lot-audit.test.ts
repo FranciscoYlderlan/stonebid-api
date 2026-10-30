@@ -67,11 +67,13 @@ function soldLot(): LotAuditInput {
     currentBidCents: 12_000,
     leaderId: ana,
     auctioneerId: leiloeiro,
+    canceledAt: null,
     settledAt,
     result: 'SOLD',
     receipt,
     debits: [{ userId: ana, amountCents: 12_000 }],
     credits: [{ userId: leiloeiro, amountCents: 12_000 }],
+    refunds: [],
   };
 }
 
@@ -88,6 +90,15 @@ function emptyLot(): LotAuditInput {
     head: { headSeq: 0, headHash: null, headSeal: null },
     currentBidCents: null,
     leaderId: null,
+  };
+}
+
+/** O mesmo lote cancelado ao vivo (OPC-2): um REFUND da Ana, líder, no valor do lance atual. */
+function canceledLot(): LotAuditInput {
+  return {
+    ...liveLot(),
+    canceledAt: new Date(Date.UTC(2026, 9, 30, 12, 30)),
+    refunds: [{ userId: ana, amountCents: 12_000 }],
   };
 }
 
@@ -226,5 +237,32 @@ describe('auditoria do lote: cadeia, cabeça, comprovante e extrato (RF-60, M-12
   it('lances fora de ordem na entrada são conferidos em ordem de seq', () => {
     const input = soldLot();
     expect(auditLot({ ...input, bids: [...input.bids].reverse() }, secrets).verdict).toBe('INTACT');
+  });
+
+  it('T-10b: cancelado com lances e um REFUND do líder no valor do lance atual → íntegro', () => {
+    expect(auditLot(canceledLot(), secrets)).toEqual({
+      verdict: 'INTACT',
+      firstInconsistency: null,
+    });
+    const canceledEmpty: LotAuditInput = { ...emptyLot(), canceledAt: canceledLot().canceledAt };
+    expect(auditLot(canceledEmpty, secrets).verdict).toBe('INTACT');
+  });
+
+  it('T-10b: REFUND apagado, duplicado, de outro valor ou de outro licitante → CANCEL_MISMATCH', () => {
+    const input = canceledLot();
+    const expected = { seq: null, reason: 'CANCEL_MISMATCH' };
+    const refund = { userId: ana, amountCents: 12_000 };
+    const cases: LotAuditInput[] = [
+      { ...input, refunds: [] },
+      { ...input, refunds: [refund, refund] },
+      { ...input, refunds: [{ userId: ana, amountCents: 11_000 }] },
+      { ...input, refunds: [{ userId: bruno, amountCents: 12_000 }] },
+      // Estorno sem cancelamento, ou em lote cancelado sem lances.
+      { ...liveLot(), refunds: [refund] },
+      { ...emptyLot(), canceledAt: input.canceledAt, refunds: [refund] },
+    ];
+    for (const tampered of cases) {
+      expect(auditLot(tampered, secrets).firstInconsistency).toEqual(expected);
+    }
   });
 });

@@ -98,10 +98,10 @@ describe('carteira (RF-40 a RF-42, RN-07, RN-16, RN-18, Q-10)', () => {
     expect(balance.availableCents).toBe(balance.totalCents - balance.committedCents);
   });
 
-  it('saldo considera COMMIT, RELEASE, DEBIT, CREDIT e REFUND', async () => {
+  it('saldo considera COMMIT, RELEASE, DEBIT, CREDIT e REFUND (estorno libera o comprometido)', async () => {
     const { token, userId } = await newBidder();
     await deposit(token, 100_000);
-    // Movimentos do I2 inseridos direto, para provar a conta do saldo (exemplo 5.3 do contrato).
+    // Movimentos inseridos direto, para provar a conta do saldo (exemplo 5.3 do contrato).
     await prisma.walletMovement.createMany({
       data: [
         { userId, type: 'COMMIT', amountCents: 30_000 },
@@ -110,21 +110,28 @@ describe('carteira (RF-40 a RF-42, RN-07, RN-16, RN-18, Q-10)', () => {
         { userId, type: 'DEBIT', amountCents: 50_000 },
         { userId, type: 'RELEASE', amountCents: 50_000 },
         { userId, type: 'CREDIT', amountCents: 7_000 },
-        { userId, type: 'REFUND', amountCents: 3_000 },
       ],
     });
 
     expect(await wallet(token)).toMatchObject({
-      totalCents: 100_000 + 7_000 + 3_000 - 50_000,
+      totalCents: 100_000 + 7_000 - 50_000,
       committedCents: 0,
-      availableCents: 60_000,
+      availableCents: 57_000,
     });
 
     await prisma.walletMovement.create({ data: { userId, type: 'COMMIT', amountCents: 20_000 } });
     expect(await wallet(token)).toMatchObject({
-      totalCents: 60_000,
+      totalCents: 57_000,
       committedCents: 20_000,
-      availableCents: 40_000,
+      availableCents: 37_000,
+    });
+
+    // Estorno do lote cancelado (OPC-2): o total não muda e o disponível volta ao de antes do lance.
+    await prisma.walletMovement.create({ data: { userId, type: 'REFUND', amountCents: 20_000 } });
+    expect(await wallet(token)).toMatchObject({
+      totalCents: 57_000,
+      committedCents: 0,
+      availableCents: 57_000,
     });
   });
 

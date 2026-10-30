@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { minNextBidCents, validateBid, type BiddableLot } from '../../src/domain/entities/bid.ts';
-import { getCancelRefusal } from '../../src/domain/entities/lot.ts';
+import { getCancelRefund, getCancelRefusal } from '../../src/domain/entities/lot.ts';
 
 /** T-01: regras do lance (RN-02 a RN-05) e recusa por saldo (RN-07). */
 describe('validateBid (T-01, RN-02 a RN-07)', () => {
@@ -95,14 +95,18 @@ describe('getCancelRefusal (RN-12, M-13, T-10a)', () => {
   const startsAt = new Date('2026-10-30T12:00:00.000Z');
   const endsAt = new Date('2026-10-30T13:00:00.000Z');
   const lot = { startsAt, endsAt, canceledAt: null, headSeq: 0 };
+  const off = { cancelWithBidsEnabled: false };
+  const on = { cancelWithBidsEnabled: true };
 
-  it('agendado e ao vivo sem lances cancelam', () => {
-    expect(getCancelRefusal(lot, new Date(startsAt.getTime() - 1))).toBeNull();
-    expect(getCancelRefusal(lot, startsAt)).toBeNull();
+  it('agendado e ao vivo sem lances cancelam, com o OPC-2 ligado ou desligado', () => {
+    for (const options of [off, on]) {
+      expect(getCancelRefusal(lot, new Date(startsAt.getTime() - 1), options)).toBeNull();
+      expect(getCancelRefusal(lot, startsAt, options)).toBeNull();
+    }
   });
 
   it('com lances (sem o OPC-2), encerrado, no instante do fim ou já cancelado: recusa com motivo', () => {
-    expect(getCancelRefusal({ ...lot, headSeq: 1 }, startsAt)).toEqual({
+    expect(getCancelRefusal({ ...lot, headSeq: 1 }, startsAt, off)).toEqual({
       code: 'LOT_NOT_CANCELABLE',
       message: 'O lote já tem lances e não pode ser cancelado.',
     });
@@ -110,14 +114,32 @@ describe('getCancelRefusal (RN-12, M-13, T-10a)', () => {
       code: 'LOT_ENDED',
       message: 'O lote já foi encerrado e não pode ser cancelado.',
     };
-    expect(getCancelRefusal(lot, endsAt)).toEqual(ended);
-    expect(getCancelRefusal({ ...lot, canceledAt: startsAt }, startsAt)).toEqual({
+    expect(getCancelRefusal(lot, endsAt, off)).toEqual(ended);
+    expect(getCancelRefusal({ ...lot, canceledAt: startsAt }, startsAt, off)).toEqual({
       code: 'LOT_NOT_CANCELABLE',
       message: 'O lote já está cancelado.',
     });
   });
 
   it('liquidado: LOT_ENDED mesmo com relógio antes do fim', () => {
-    expect(getCancelRefusal({ ...lot, settledAt: endsAt }, startsAt)?.code).toBe('LOT_ENDED');
+    expect(getCancelRefusal({ ...lot, settledAt: endsAt }, startsAt, off)?.code).toBe('LOT_ENDED');
+  });
+
+  it('T-10b: com o OPC-2, lote com lances cancela; encerrado e já cancelado seguem recusados', () => {
+    expect(getCancelRefusal({ ...lot, headSeq: 3 }, startsAt, on)).toBeNull();
+    expect(getCancelRefusal({ ...lot, headSeq: 3 }, endsAt, on)?.code).toBe('LOT_ENDED');
+    expect(
+      getCancelRefusal({ ...lot, headSeq: 3, canceledAt: startsAt }, startsAt, on)?.message,
+    ).toBe('O lote já está cancelado.');
+  });
+});
+
+describe('getCancelRefund (OPC-2, RF-23, T-10b)', () => {
+  it('com lances: REFUND do líder no valor do lance atual; sem lances: nenhum', () => {
+    expect(getCancelRefund({ headSeq: 3, leaderId: 'ana', currentBidCents: 12_000 })).toEqual({
+      userId: 'ana',
+      amountCents: 12_000,
+    });
+    expect(getCancelRefund({ headSeq: 0, leaderId: null, currentBidCents: null })).toBeNull();
   });
 });

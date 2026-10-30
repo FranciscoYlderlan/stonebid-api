@@ -94,6 +94,12 @@ export interface CancelRefusal {
 export const CANCEL_REASON_MIN = 3;
 export const CANCEL_REASON_MAX = 280;
 
+/** Opções do cancelamento: o OPC-2 é um sinalizador de configuração (`CANCEL_WITH_BIDS_ENABLED`). */
+export interface CancelOptions {
+  /** Ligado: lote com lances pode ser cancelado, com estorno ao líder (OPC-2, RF-23). */
+  cancelWithBidsEnabled: boolean;
+}
+
 /**
  * Decide o cancelamento (RF-22, RN-12, M-13), para lote agendado e ao vivo: devolve o motivo
  * da recusa ou `null` se pode cancelar. Quem chama lê o lote e a hora com a linha do lote
@@ -102,6 +108,7 @@ export const CANCEL_REASON_MAX = 280;
 export function getCancelRefusal(
   lot: Pick<Lot, 'startsAt' | 'endsAt' | 'canceledAt' | 'headSeq'> & { settledAt?: Date | null },
   now: Date,
+  options: CancelOptions,
 ): CancelRefusal | null {
   const status = getLotStatus(lot, now);
   if (status === 'CANCELED') {
@@ -110,11 +117,28 @@ export function getCancelRefusal(
   if (status === 'ENDED') {
     return { code: 'LOT_ENDED', message: 'O lote já foi encerrado e não pode ser cancelado.' };
   }
-  if (lot.headSeq > 0) {
+  if (lot.headSeq > 0 && !options.cancelWithBidsEnabled) {
     return {
       code: 'LOT_NOT_CANCELABLE',
       message: 'O lote já tem lances e não pode ser cancelado.',
     };
   }
   return null;
+}
+
+/** Estorno do cancelamento (OPC-2, RF-23): o lance atual volta ao disponível do líder. */
+export interface CancelRefund {
+  userId: string;
+  amountCents: number;
+}
+
+/**
+ * Estorno de um lote cancelado: com lances, um `REFUND` do líder no valor do lance atual
+ * (superados já tinham `RELEASE`; o leiloeiro não recebe nada); sem lances, nenhum.
+ */
+export function getCancelRefund(
+  lot: Pick<Lot, 'headSeq' | 'leaderId' | 'currentBidCents'>,
+): CancelRefund | null {
+  if (lot.headSeq === 0 || lot.leaderId === null || lot.currentBidCents === null) return null;
+  return { userId: lot.leaderId, amountCents: lot.currentBidCents };
 }
