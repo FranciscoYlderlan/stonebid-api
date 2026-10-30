@@ -1,8 +1,7 @@
-import { getLotStatus, type Lot } from '../../domain/entities/lot.ts';
+import { getCancelRefusal, type Lot } from '../../domain/entities/lot.ts';
 import { ForbiddenError } from '../../domain/errors/forbidden-error.ts';
 import { LotNotCancelableError } from '../../domain/errors/lot-not-cancelable-error.ts';
 import { LotNotFoundError } from '../../domain/errors/lot-not-found-error.ts';
-import type { LotBidsReader } from '../../domain/repositories/lot-bids-reader.ts';
 import type { LotsRepository } from '../../domain/repositories/lots-repository.ts';
 
 export interface CancelLotInput {
@@ -11,45 +10,33 @@ export interface CancelLotInput {
 }
 
 /**
- * Cancelamento (RF-22, RN-12): só o leiloeiro dono, antes do encerramento e sem lances.
- * A checagem de lances passa pela porta LotBidsReader, que o I2 liga aos lances reais.
+ * Cancelamento (RF-22, RN-12, M-13): só o leiloeiro dono, antes do encerramento e sem lances.
+ * Lances, cancelamento anterior e fim são lidos com o lote travado, na mesma trava do lance:
+ * cancelamento e lance ao mesmo tempo, só um passa.
  */
 export class CancelLotUseCase {
   constructor(
     private readonly lotsRepository: LotsRepository,
-    private readonly bidsReader: LotBidsReader,
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
   async execute(input: CancelLotInput): Promise<{ lot: Lot; now: Date }> {
     const lot = await this.lotsRepository.findById(input.lotId);
     if (!lot) throw new LotNotFoundError();
+    // O dono do lote nunca muda: a checagem não precisa da trava.
     if (lot.auctioneerId !== input.auctioneerId) {
       throw new ForbiddenError('Só o leiloeiro que criou o lote pode cancelá-lo.');
     }
 
-    const now = this.clock();
-    assertCancelable(getLotStatus(lot, now));
-
-    if (await this.bidsReader.hasBids(lot.id)) {
-      throw new LotNotCancelableError('O lote já tem lances e não pode ser cancelado.');
-    }
-
-    const canceled = await this.lotsRepository.cancel(lot.id, now);
-    if (!canceled) {
-      // Outro pedido cancelou ou o lote encerrou entre a leitura e a gravação.
-      const current = await this.lotsRepository.findById(lot.id);
-      assertCancelable(current ? getLotStatus(current, this.clock()) : 'CANCELED');
-      throw new LotNotCancelableError('O lote não pode mais ser cancelado.');
-    }
+    let now = this.clock();
+    const canceled = await this.lotsRepository.cancel(lot.id, (locked) => {
+      now = this.clock();
+      const refusal = getCancelRefusal(locked, now);
+      if (refusal) throw new LotNotCancelableError(refusal);
+      return now;
+    });
+    if (!canceled) throw new LotNotFoundError();
 
     return { lot: canceled, now };
-  }
-}
-
-function assertCancelable(status: ReturnType<typeof getLotStatus>): void {
-  if (status === 'CANCELED') throw new LotNotCancelableError('O lote já está cancelado.');
-  if (status === 'ENDED') {
-    throw new LotNotCancelableError('O lote já foi encerrado e não pode ser cancelado.');
   }
 }

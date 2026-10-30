@@ -27,6 +27,8 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/stonebid
       JWT_SECRET: ${JWT_SECRET:-local-compose-secret-change-me-0123456789}
+      SEAL_SECRET: ${SEAL_SECRET:-local-compose-seal-secret-change-me-0123}
+      PSEUDONYM_SECRET: ${PSEUDONYM_SECRET:-local-compose-pseudonym-secret-change-me}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       SEED_PASSWORD: ${SEED_PASSWORD:-stonebid123}
       MCP_ENABLED: 'false'
@@ -44,6 +46,8 @@ services:
       HOST: 0.0.0.0
       PORT: 3333
       JWT_SECRET: ${JWT_SECRET:-local-compose-secret-change-me-0123456789}
+      SEAL_SECRET: ${SEAL_SECRET:-local-compose-seal-secret-change-me-0123}
+      PSEUDONYM_SECRET: ${PSEUDONYM_SECRET:-local-compose-pseudonym-secret-change-me}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       SEED_PASSWORD: ${SEED_PASSWORD:-stonebid123}
       MCP_ENABLED: ${MCP_ENABLED:-true}

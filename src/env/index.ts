@@ -23,6 +23,10 @@ const envSchema = z
           .filter(Boolean),
       ),
     SEED_PASSWORD: z.string().min(8).optional(),
+    // Segredo do HMAC dos selos (lance, cabeça da cadeia e comprovante, M-12). Só no servidor.
+    SEAL_SECRET: z.string().min(32, 'SEAL_SECRET precisa de pelo menos 32 caracteres'),
+    // Segredo do pseudônimo do licitante no lote (AD-09), separado do segredo dos selos.
+    PSEUDONYM_SECRET: z.string().min(32, 'PSEUDONYM_SECRET precisa de pelo menos 32 caracteres'),
     MCP_ENABLED: booleanFromString,
     MCP_API_KEY: z.string().min(16, 'MCP_API_KEY precisa de pelo menos 16 caracteres').optional(),
     // Teto por depósito em centavos (Q-10). Padrão: R$ 10.000,00.

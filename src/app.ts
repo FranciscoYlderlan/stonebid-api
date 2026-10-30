@@ -17,7 +17,7 @@ import { itemsRoutes } from './infra/http/routes/items-routes.ts';
 import { lotsRoutes } from './infra/http/routes/lots-routes.ts';
 import { walletRoutes } from './infra/http/routes/wallet-routes.ts';
 import { mcpPlugin } from './infra/mcp/plugin.ts';
-import { NoBidsYetReader } from './infra/repositories/no-bids-yet-reader.ts';
+import { PrismaLotBidsReader } from './infra/repositories/prisma/prisma-lot-bids-reader.ts';
 
 /**
  * Proxy confiável para o `request.ip` (chave do limite por IP): só o salto imediato quando ele vem
@@ -45,7 +45,7 @@ export interface BuildAppOptions {
   mcpEnabled?: boolean;
   /** API de itens (AD-06). Padrão: Art Institute of Chicago pelo ambiente; os testes trocam. */
   itemCatalog?: ItemCatalog;
-  /** Leitura de lances (RN-12, RN-19). Padrão: nenhum lance até o I2; os testes trocam. */
+  /** Leitura de lances (RN-19). Padrão: os lances do banco; os testes podem trocar. */
   lotBidsReader?: LotBidsReader;
 }
 
@@ -80,7 +80,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(walletRoutes);
 
   const catalog = options.itemCatalog ?? makeItemCatalog();
-  const bidsReader = options.lotBidsReader ?? new NoBidsYetReader();
+  const bidsReader = options.lotBidsReader ?? new PrismaLotBidsReader();
   await app.register(itemsRoutes, { catalog, bidsReader });
   await app.register(lotsRoutes, { catalog, bidsReader });
 
