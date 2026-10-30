@@ -199,6 +199,30 @@ describe('auditoria do lote: cadeia, cabeça, comprovante e extrato (RF-60, M-12
     }
   });
 
+  it('ordem da conferência: comprovante antes do lance atual, extrato antes do líder', () => {
+    const input = soldLot();
+    // Comprovante e lance atual adulterados juntos: o comprovante é conferido primeiro.
+    const receiptAndBid: LotAuditInput = {
+      ...input,
+      receipt: { ...input.receipt!, amountCents: 11_999 },
+      currentBidCents: 11_000,
+    };
+    expect(auditLot(receiptAndBid, secrets)).toEqual({
+      verdict: 'TAMPERED',
+      firstInconsistency: { seq: null, reason: 'RECEIPT_MISMATCH' },
+    });
+    // Extrato e líder adulterados juntos: a liquidação é conferida antes do líder.
+    const debitAndLeader: LotAuditInput = {
+      ...input,
+      debits: [{ userId: bruno, amountCents: 12_000 }],
+      leaderId: bruno,
+    };
+    expect(auditLot(debitAndLeader, secrets)).toEqual({
+      verdict: 'TAMPERED',
+      firstInconsistency: { seq: null, reason: 'SETTLEMENT_MISMATCH' },
+    });
+  });
+
   it('lances fora de ordem na entrada são conferidos em ordem de seq', () => {
     const input = soldLot();
     expect(auditLot({ ...input, bids: [...input.bids].reverse() }, secrets).verdict).toBe('INTACT');
