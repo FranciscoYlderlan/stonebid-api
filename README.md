@@ -50,6 +50,8 @@ Validadas com zod em `src/env/` (o app não sobe com valor inválido). Modelo: `
 | `HOST`                 | não                          | `0.0.0.0`                      | Interface de escuta                                                 |
 | `DATABASE_URL`         | sim                          | —                              | Conexão PostgreSQL                                                  |
 | `JWT_SECRET`           | sim                          | —                              | Segredo do JWT (mín. 32 caracteres)                                 |
+| `SEAL_SECRET`          | sim                          | —                              | Segredo do HMAC dos selos de lance, cabeça e comprovante (mín. 32)  |
+| `PSEUDONYM_SECRET`     | sim                          | —                              | Segredo do pseudônimo do licitante no lote (mín. 32), outro segredo |
 | `CORS_ORIGIN`          | sim                          | —                              | Origens liberadas, separadas por vírgula                            |
 | `SEED_PASSWORD`        | com MCP ligada e para o seed | —                              | Senha dos usuários de teste                                         |
 | `MCP_ENABLED`          | não                          | `false`                        | Liga a camada MCP em `/mcp`                                         |
@@ -78,7 +80,7 @@ Sessão por JWT no cabeçalho `Authorization: Bearer <token>`, válido por 7 dia
 Saldo simulado em **centavos inteiros**. O saldo não é guardado: é derivado do extrato `wallet_movements`, que é só de inserção (nunca update nem delete). Cada movimento tem valor positivo; o sinal vem do tipo:
 
 - **total** = `DEPOSIT` + `CREDIT` + `REFUND` − `DEBIT`
-- **comprometido** = `COMMIT` − `RELEASE` (lances em que o licitante lidera; entra com os lances)
+- **comprometido** = `COMMIT` − `RELEASE` (soma dos lances em que o licitante lidera agora)
 - **disponível** = total − comprometido
 
 Só `BIDDER`: leiloeiro → 403 `FORBIDDEN`; sem token → 401 `UNAUTHORIZED`.
@@ -87,31 +89,70 @@ Só `BIDDER`: leiloeiro → 403 `FORBIDDEN`; sem token → 401 `UNAUTHORIZED`.
 | ----------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /wallet`           | —                                                                                  | 200 `{ totalCents, committedCents, availableCents, depositLimitCents }`                                       | 401, 403                                                                                                                                             |
 | `POST /wallet/deposits` | cabeçalho `Idempotency-Key` (8 a 128 caracteres) + `{ amountCents }` (inteiro > 0) | 201 `{ movement, wallet }`; mesma chave e mesmo valor de novo → 200 com o mesmo `movement`, sem novo depósito | 400 `VALIDATION_ERROR` (sem chave, valor ≤ 0), 400 `DEPOSIT_LIMIT_EXCEEDED` (acima do teto), 409 `IDEMPOTENCY_KEY_REUSED` (mesma chave, outro valor) |
-| `GET /wallet/movements` | —                                                                                  | 200 `{ items: [{ id, type, amountCents, lotId, createdAt }] }`, mais recentes primeiro                        | 401, 403                                                                                                                                             |
+| `GET /wallet/movements` | —                                                                                  | 200 `{ items: [{ id, type, amountCents, lotId, createdAt }] }`, mais recentes primeiro (pela sequência)       | 401, 403                                                                                                                                             |
 
 Idempotência: o banco tem índice único em (`user_id`, `idempotency_key`); duas requisições simultâneas com a mesma chave geram um depósito só. Não há saque. O teto vem de `DEPOSIT_LIMIT_CENTS`.
+
+O extrato é ordenado por uma sequência global crescente (`seq`), não pelo horário: o lance grava o `COMMIT` do novo líder e o `RELEASE` do antigo no mesmo instante, e a sequência mantém a ordem estável.
 
 ## Lotes
 
 Rotas protegidas usam `Authorization: Bearer <token>`. Valores em **centavos inteiros**; datas ISO 8601 em UTC.
 
-| Rota                                   | Quem            | Sucesso                                                                                                  | Erros                                                                                                    |
-| -------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `GET /items/search?q=&page=`           | AUCTIONEER      | 200 `{ items: [{ externalId, title, imageUrl, attributes }], page, totalPages }`                         | 502 `EXTERNAL_API_UNAVAILABLE`                                                                           |
-| `GET /items/images/:imageId/thumbnail` | público         | 200 miniatura (400 px) baixada pelo servidor no IIIF, `Cache-Control: public, max-age=604800, immutable` | 400 `VALIDATION_ERROR` (id não é UUID), 404 `ITEM_NOT_FOUND`, 502 `EXTERNAL_API_UNAVAILABLE`             |
-| `POST /lots`                           | AUCTIONEER      | 201 `lot`                                                                                                | 400 `VALIDATION_ERROR`, 404 `ITEM_NOT_FOUND`, 422 `ITEM_IMAGE_TOO_LARGE`, 502 `EXTERNAL_API_UNAVAILABLE` |
-| `GET /lots`                            | público         | 200 `{ serverTime, live, scheduled, ended }`                                                             |                                                                                                          |
-| `GET /lots/:id`                        | público         | 200 `{ serverTime, lot }` (cancelado também)                                                             | 404 `LOT_NOT_FOUND`                                                                                      |
-| `GET /lots/:id/image`                  | público         | 200 bytes da imagem, `Cache-Control: public, max-age=86400`                                              | 404 `LOT_NOT_FOUND`                                                                                      |
-| `GET /auctioneer/lots`                 | AUCTIONEER      | 200 `{ serverTime, items }`, só os lotes do próprio leiloeiro, inclusive cancelados                      |                                                                                                          |
-| `POST /lots/:id/cancel`                | AUCTIONEER dono | 200 `lot`                                                                                                | 403 `FORBIDDEN` (não é o dono), 404, 409 `LOT_NOT_CANCELABLE` (encerrado, já cancelado ou com lances)    |
+| Rota                                   | Quem            | Sucesso                                                                                                  | Erros                                                                                                                                  |
+| -------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /items/search?q=&page=`           | AUCTIONEER      | 200 `{ items: [{ externalId, title, imageUrl, attributes, auction }], page, totalPages }`                | 502 `EXTERNAL_API_UNAVAILABLE`                                                                                                         |
+| `GET /items/images/:imageId/thumbnail` | público         | 200 miniatura (400 px) baixada pelo servidor no IIIF, `Cache-Control: public, max-age=604800, immutable` | 400 `VALIDATION_ERROR` (id não é UUID), 404 `ITEM_NOT_FOUND`, 502 `EXTERNAL_API_UNAVAILABLE`                                           |
+| `POST /lots`                           | AUCTIONEER      | 201 `lot`                                                                                                | 400 `VALIDATION_ERROR`, 404 `ITEM_NOT_FOUND`, 409 `ITEM_ALREADY_AUCTIONED`, 422 `ITEM_IMAGE_TOO_LARGE`, 502 `EXTERNAL_API_UNAVAILABLE` |
+| `GET /lots`                            | público         | 200 `{ serverTime, live, scheduled, ended }`                                                             |                                                                                                                                        |
+| `GET /lots/:id`                        | público         | 200 `{ serverTime, lot }` (cancelado também)                                                             | 404 `LOT_NOT_FOUND`                                                                                                                    |
+| `GET /lots/:id/image`                  | público         | 200 bytes da imagem, `Cache-Control: public, max-age=86400`                                              | 404 `LOT_NOT_FOUND`                                                                                                                    |
+| `GET /auctioneer/lots`                 | AUCTIONEER      | 200 `{ serverTime, items }`, só os lotes do próprio leiloeiro, inclusive cancelados                      |                                                                                                                                        |
+| `POST /lots/:id/cancel`                | AUCTIONEER dono | 200 `lot`                                                                                                | 403 `FORBIDDEN` (não é o dono), 404, 409 `LOT_NOT_CANCELABLE` (encerrado, já cancelado ou com lances)                                  |
 
 - **Corpo do `POST /lots`:** `{ externalId, startingBidCents, minIncrementCents, startsAt, endsAt }`. O lance inicial é o valor mínimo do lote. O início não pode estar no passado (tolerância de 60 s) e o fim fica pelo menos 5 minutos depois do início. Não há edição de lote.
 - **Miniatura da busca:** o `imageUrl` de cada item da busca é relativo à API (`/items/images/{imageId}/thumbnail`), não o IIIF da AIC: no navegador, o IIIF responde com o desafio anti-robô da Cloudflare e o `<img>` falha. A rota é pública porque o `<img>` não manda o JWT, e as imagens são de domínio público. O servidor só aceita id de imagem em UUID e monta a URL no `ITEMS_IIIF_BASE_URL` (sem receber URL do cliente).
-- **`lot`** = `{ id, title, attributes, imageUrl: "/lots/{id}/image", startingBidCents, minIncrementCents, currentBidCents, startsAt, originalEndsAt, endsAt, status, canceledAt }`, sem dados do leiloeiro. `attributes` = `{ artist, date, medium, dimensions, placeOfOrigin }` (cada um pode ser `null`).
+- **`lot`** = `{ id, title, attributes, imageUrl: "/lots/{id}/image", startingBidCents, minIncrementCents, currentBidCents, minNextBidCents, leaderPseudonym, startsAt, originalEndsAt, endsAt, status, canceledAt }`, sem dados do leiloeiro nem do líder. `attributes` = `{ artist, date, medium, dimensions, placeOfOrigin }` (cada um pode ser `null`). `currentBidCents` e `leaderPseudonym` são `null` sem lances; `minNextBidCents` é o menor lance aceito agora (o lance inicial sem lances; senão o atual + o incremento).
+- **Uma obra, um lote (RN-19):** criar lote de uma obra que já tem lote agendado, ao vivo ou arrematado (encerrado com lances) → 409 `ITEM_ALREADY_AUCTIONED`, com `error.details = { status: "SCHEDULED" | "LIVE" | "SOLD", lotId }` do lote que prende a obra. Lote cancelado ou encerrado sem lances libera a obra. Pedidos simultâneos da mesma obra criam um lote só. Na busca, `auction` mostra a mesma situação (`{ status, lotId }`) ou `null` se a obra está livre.
 - **Estado** (`status`) vem do relógio do servidor: `SCHEDULED` antes do início, `LIVE` entre início e fim, `ENDED` a partir do fim, `CANCELED` se o leiloeiro cancelou. Só o cancelamento é gravado. Use `serverTime` para contagens regressivas.
 - **Vitrine:** ao vivo pelo fim mais próximo, agendados pelo início mais próximo, encerrados pelo fim mais recente (até 30). Cancelados ficam fora.
-- **Cancelamento:** só agendado ou ao vivo e sem lances. A checagem de lances fica atrás da porta `LotBidsReader` (hoje sempre "sem lances"; os lances chegam numa próxima entrega).
+- **Cancelamento:** só agendado ou ao vivo e sem lances. Lances, fim e cancelamento anterior são lidos com a linha do lote travada, a mesma trava do lance: cancelamento e lance ao mesmo tempo, só um passa.
+
+## Lances
+
+| Rota                  | Quem    | Entrada                                                                        | Sucesso                                                                                               |
+| --------------------- | ------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `POST /lots/:id/bids` | BIDDER  | cabeçalho `Idempotency-Key` (8 a 128 caracteres) + `{ amountCents }` (inteiro) | 201 `{ bid, lot, wallet }`; mesma chave e mesmo valor de novo → 200 com o mesmo `bid`, sem lance novo |
+| `GET /lots/:id/bids`  | público | —                                                                              | 200 `{ items: [{ seq, amountCents, pseudonym, createdAt }] }`, do mais novo para o mais antigo        |
+
+`bid` = `{ seq, lotId, amountCents, pseudonym, createdAt }`; `lot` no formato acima; `wallet` no formato do `GET /wallet`. O licitante aparece só pelo pseudônimo (`"Licitante 7F3A"`), estável dentro do lote e diferente entre lotes: nenhuma resposta pública traz id, nome, e-mail, hash ou selo.
+
+Recusas (RF-70), todas com mensagem em português:
+
+| Status | Código                   | Quando                                                                     |
+| ------ | ------------------------ | -------------------------------------------------------------------------- |
+| 422    | `BID_BELOW_MINIMUM`      | abaixo do lance inicial ou do atual + incremento; `details.minAmountCents` |
+| 422    | `INSUFFICIENT_FUNDS`     | acima do disponível; `details.availableCents`                              |
+| 409    | `ALREADY_WINNING`        | quem já lidera tenta cobrir o próprio lance                                |
+| 409    | `LOT_NOT_STARTED`        | antes do início                                                            |
+| 409    | `LOT_ENDED`              | a partir do fim (o lance no instante exato do fim é recusado)              |
+| 409    | `LOT_CANCELED`           | lote cancelado                                                             |
+| 409    | `IDEMPOTENCY_KEY_REUSED` | a chave já foi usada em outro lance (outro valor ou outro lote)            |
+| 403    | `FORBIDDEN`              | leiloeiro (nunca dá lance)                                                 |
+| 401    | `UNAUTHORIZED`           | sem token                                                                  |
+| 404    | `LOT_NOT_FOUND`          | lote inexistente                                                           |
+| 400    | `VALIDATION_ERROR`       | sem `Idempotency-Key`, valor não inteiro ou ≤ 0                            |
+
+**Como o lance é gravado.** Uma transação só: trava a linha do lote (`SELECT … FOR UPDATE`) e a linha do licitante (`FOR NO KEY UPDATE`, a carteira dele), lê a hora do servidor, valida, grava o lance, o `COMMIT` do novo líder e o `RELEASE` do antigo, e atualiza no lote o lance atual, o líder e a cabeça da cadeia. Lances do mesmo lote passam um de cada vez; o segundo é revalidado contra o lance que o primeiro gravou. Lances do mesmo licitante em lotes diferentes também passam um de cada vez, então o disponível nunca fica negativo.
+
+**Cadeia de hash.** Cada lance guarda `seq` (1..n no lote), `prev_hash`, `hash` e `seal`:
+
+- `hash = SHA-256(JSON.stringify(["v1", lotId, seq, pseudonym, amountCents, createdAtMs, prevHash]))`; no lance 1, `prevHash = SHA-256("genesis:" + lotId)`;
+- `seal = HMAC-SHA256(SEAL_SECRET, "bid:v1" + hash)`;
+- o lote guarda a cabeça: `head_seq`, `head_hash` e `head_seal = HMAC-SHA256(SEAL_SECRET, "head:v1" + lotId + seq + hash)`;
+- `pseudonym = "Licitante " + 4 primeiros hexadecimais (maiúsculos) de HMAC-SHA256(PSEUDONYM_SECRET, "pseudonym:v1" + lotId + bidderId)`.
+
+Qualquer pessoa recalcula a cadeia de hashes a partir do histórico público; só o selo exige o servidor. Trocar o licitante de um lance no banco muda o pseudônimo e quebra o hash. Limite: quem tiver o banco **e** o `SEAL_SECRET`, ou um backup antigo com uma cabeça anterior, ainda forja o histórico; só uma âncora externa resolveria. Trocar `SEAL_SECRET` invalida os selos gravados; trocar `PSEUDONYM_SECRET` muda os pseudônimos e quebra os hashes gravados.
 
 ### API externa de itens (Art Institute of Chicago)
 
@@ -137,6 +178,8 @@ Os licitantes começam com um depósito de R$ 5.000,00 (chave `seed-deposit-<ema
 
 O seed também cria três lotes do `leiloeiro` (imagens em `prisma/seed-assets/`, sem rede): um ao vivo até 14 dias depois da primeira execução, um agendado para 1 dia depois e um encerrado. Rodar de novo atualiza os dados mas não mexe nas datas.
 
+No lote ao vivo, o seed dá três lances pelo mesmo caso de uso da API (R$ 500,00 do `licitante-1`, R$ 550,00 do `licitante-2` e R$ 600,00 do `licitante-1`), com chaves `seed-bid-1` a `seed-bid-3`: rodar de novo não duplica. Se o lote já encerrou ou recebeu lances maiores, o seed pula o lance e segue.
+
 ## Camada MCP
 
 Com `MCP_ENABLED=true`, a API expõe um servidor MCP (Streamable HTTP, sessão por `mcp-session-id`) em `/mcp`. Toda requisição exige `MCP_API_KEY` em `x-api-key` ou `Authorization: Bearer`; sem ela, 401. Desligada em produção.
@@ -161,6 +204,8 @@ claude mcp add --transport http stonebid http://localhost:3333/mcp --header "x-a
 | `wallet_get`       | `GET /wallet`           | Licitante (sessão de `entrar`)                                                      |
 | `wallet_deposit`   | `POST /wallet/deposits` | `{ amountCents, idempotencyKey }`; a chave vai no cabeçalho `Idempotency-Key`       |
 | `wallet_movements` | `GET /wallet/movements` | Licitante (sessão de `entrar`)                                                      |
+| `bids_place`       | `POST /lots/:id/bids`   | `{ id, amountCents, idempotencyKey }`; licitante (sessão de `entrar`)               |
+| `bids_list`        | `GET /lots/:id/bids`    | `{ id }`; público                                                                   |
 
 As tools chamam as rotas reais com `app.inject()` (validação, auth e erros de verdade). Cada rota nova ganha a sua tool em `src/infra/mcp/tools/`.
 

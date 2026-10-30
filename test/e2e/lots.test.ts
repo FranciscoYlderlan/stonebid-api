@@ -262,6 +262,8 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
         startingBidCents: 10_000,
         minIncrementCents: 500,
         currentBidCents: null,
+        minNextBidCents: 10_000,
+        leaderPseudonym: null,
         startsAt: expect.any(String),
         originalEndsAt: lot.endsAt,
         endsAt: expect.any(String),

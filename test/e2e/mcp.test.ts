@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -7,7 +8,7 @@ import { buildApp } from '../../src/app.ts';
 import { prisma } from '../../src/infra/repositories/prisma/prisma-client.ts';
 import { testEnv } from '../test-env.ts';
 import { uniqueEmail } from './helpers.ts';
-import { startItemsApiMock, type ItemsApiMock } from './items-api-mock.ts';
+import { MOCK_IMAGE, startItemsApiMock, type ItemsApiMock } from './items-api-mock.ts';
 
 interface ToolPayload {
   status: number;
@@ -75,6 +76,8 @@ describe('camada MCP (/mcp)', () => {
       'auth_login',
       'auth_me',
       'auth_register',
+      'bids_list',
+      'bids_place',
       'entrar',
       'health',
       'items_search',
@@ -240,6 +243,102 @@ describe('camada MCP: tools de itens e lotes', () => {
     await call('entrar', { user: 'leiloeiro' });
     const canceled = await call('lots_cancel', { id });
     expect(canceled).toMatchObject({ status: 200, body: { id, status: 'CANCELED' } });
+
+    await client.close();
+  });
+});
+
+describe('camada MCP: tools de lances', () => {
+  let app: FastifyInstance;
+  let mcpUrl: URL;
+
+  beforeAll(async () => {
+    app = await buildApp({ mcpEnabled: true });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as AddressInfo;
+    mcpUrl = new URL(`http://127.0.0.1:${port}/mcp`);
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await prisma.$disconnect();
+  });
+
+  it('licitante dá lance e repete a chave; leiloeiro recebe 403; histórico com pseudônimo', async () => {
+    const auctioneer = await prisma.user.findUniqueOrThrow({
+      where: { email: 'leiloeiro@stonebid.dev' },
+    });
+    const lot = await prisma.lot.create({
+      data: {
+        auctioneerId: auctioneer.id,
+        externalId: `lance-mcp-${randomUUID()}`,
+        title: 'Lote MCP',
+        attributes: {},
+        imageData: new Uint8Array(MOCK_IMAGE),
+        imageContentType: 'image/png',
+        startingBidCents: 1_000,
+        minIncrementCents: 100,
+        startsAt: new Date(Date.now() - 60 * 1000),
+        originalEndsAt: new Date(Date.now() + 60 * 60 * 1000),
+        endsAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
+
+    const client = new Client({ name: 'stonebid-e2e', version: '0.0.0' });
+    await client.connect(
+      new StreamableHTTPClientTransport(mcpUrl, {
+        requestInit: { headers: { 'x-api-key': testEnv.MCP_API_KEY } },
+      }),
+    );
+    const call = async (name: string, args: Record<string, unknown> = {}) =>
+      payloadOf(await client.callTool({ name, arguments: args }));
+
+    await call('entrar', { user: 'leiloeiro' });
+    const forbidden = await call('bids_place', {
+      id: lot.id,
+      amountCents: 1_000,
+      idempotencyKey: randomUUID(),
+    });
+    expect(forbidden).toMatchObject({ status: 403, body: { error: { code: 'FORBIDDEN' } } });
+
+    await call('entrar', { user: 'licitante-1' });
+    const key = randomUUID();
+    const placed = await call('bids_place', {
+      id: lot.id,
+      amountCents: 1_000,
+      idempotencyKey: key,
+    });
+    expect(placed).toMatchObject({
+      status: 201,
+      body: { bid: { seq: 1, amountCents: 1_000 }, lot: { minNextBidCents: 1_100 } },
+    });
+    const replay = await call('bids_place', {
+      id: lot.id,
+      amountCents: 1_000,
+      idempotencyKey: key,
+    });
+    expect(replay.status).toBe(200);
+
+    const below = await call('bids_place', {
+      id: lot.id,
+      amountCents: 1_050,
+      idempotencyKey: randomUUID(),
+    });
+    expect(below).toMatchObject({
+      status: 409,
+      body: { error: { code: 'ALREADY_WINNING' } },
+    });
+
+    const list = await call('bids_list', { id: lot.id });
+    expect(list.status).toBe(200);
+    expect(list.body.items).toEqual([
+      {
+        seq: 1,
+        amountCents: 1_000,
+        pseudonym: expect.stringMatching(/^Licitante [0-9A-F]{4}$/),
+        createdAt: expect.any(String),
+      },
+    ]);
 
     await client.close();
   });
