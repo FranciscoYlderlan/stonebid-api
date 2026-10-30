@@ -67,6 +67,45 @@ describe('auth (RF-01, RF-02)', () => {
     expect(badRole.response.json().error.code).toBe('VALIDATION_ERROR');
   });
 
+  it('RF-40: nome, e-mail e senha acima do limite → 400 com mensagem em português', async () => {
+    const cases = [
+      [{ name: 'a'.repeat(121) }, 'name', 'O nome deve ter no máximo 120 caracteres.'],
+      [{ password: 'a'.repeat(129) }, 'password', 'A senha deve ter no máximo 128 caracteres.'],
+      [
+        { email: `${'a'.repeat(250)}@e2e.stonebid.dev` },
+        'email',
+        'O e-mail deve ter no máximo 254 caracteres.',
+      ],
+    ] as const;
+    for (const [overrides, path, message] of cases) {
+      const { response } = await registerUser(app, overrides);
+      expect(response.statusCode, path).toBe(400);
+      expect(response.json()).toEqual({
+        error: { code: 'VALIDATION_ERROR', message, details: [{ path, message }] },
+      });
+    }
+
+    // No limite exato, o cadastro passa.
+    const atLimit = await registerUser(app, { name: 'a'.repeat(120), password: 'a'.repeat(128) });
+    expect(atLimit.response.statusCode).toBe(201);
+  });
+
+  it('RF-40: cadastro e login sem corpo → 400 com mensagem em português', async () => {
+    const register = await app.inject({ method: 'POST', url: '/auth/register' });
+    expect(register.statusCode).toBe(400);
+    expect(register.json().error).toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: 'Envie os dados do cadastro no corpo da requisição, em JSON.',
+    });
+
+    const login = await app.inject({ method: 'POST', url: '/auth/login' });
+    expect(login.statusCode).toBe(400);
+    expect(login.json().error).toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: 'Envie o e-mail e a senha no corpo da requisição, em JSON.',
+    });
+  });
+
   it('POST /auth/login com credenciais certas → 200 user + token', async () => {
     const { payload } = await registerUser(app);
     const response = await app.inject({
