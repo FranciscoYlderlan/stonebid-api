@@ -4,7 +4,7 @@ import { buildApp } from '../../src/app.ts';
 import { AIC_USER_AGENT } from '../../src/infra/external/artic-item-catalog.ts';
 import { prisma } from '../../src/infra/repositories/prisma/prisma-client.ts';
 import { registerUser } from './helpers.ts';
-import { MOCK_IMAGE, startItemsApiMock, type ItemsApiMock } from './items-api-mock.ts';
+import { IMG_900001, MOCK_IMAGE, startItemsApiMock, type ItemsApiMock } from './items-api-mock.ts';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -82,7 +82,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
   });
 
   describe('GET /items/search (RF-20)', () => {
-    it('leiloeiro busca e recebe só itens com imagem, com URL IIIF e atributos', async () => {
+    it('leiloeiro busca e recebe só itens com imagem, com miniatura pela API e atributos', async () => {
       mock.requests.length = 0;
       const response = await app.inject({
         method: 'GET',
@@ -101,7 +101,7 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
       expect(body.items[0]).toEqual({
         externalId: '900001',
         title: 'Paisagem simulada',
-        imageUrl: expect.stringMatching(/\/iiif\/2\/img-900001\/full\/843,\/0\/default\.jpg$/),
+        imageUrl: `/items/images/${IMG_900001}/thumbnail`,
         attributes: {
           artist: 'Pintora Teste\nBrasil, 1850–1920',
           date: '1890',
@@ -129,6 +129,87 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
 
       const anonymous = await app.inject({ method: 'GET', url: '/items/search?q=x' });
       expect(anonymous.statusCode).toBe(401);
+    });
+  });
+
+  describe('GET /items/images/:imageId/thumbnail (RF-20)', () => {
+    it('pública: baixa a miniatura de 400 px no IIIF e devolve bytes com cache longo', async () => {
+      mock.requests.length = 0;
+      const response = await app.inject({
+        method: 'GET',
+        url: `/items/images/${IMG_900001}/thumbnail`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toBe('image/png');
+      expect(response.headers['cache-control']).toBe('public, max-age=604800, immutable');
+      expect(response.headers['x-content-type-options']).toBe('nosniff');
+      expect(Buffer.compare(response.rawPayload, MOCK_IMAGE)).toBe(0);
+
+      expect(mock.requests).toHaveLength(1);
+      expect(mock.requests[0]?.url).toBe(`/iiif/2/${IMG_900001}/full/400,/0/default.jpg`);
+      expect(mock.requests[0]?.headers['aic-user-agent']).toBe(AIC_USER_AGENT);
+    });
+
+    it('a URL de miniatura que a busca devolve funciona', async () => {
+      const search = await app.inject({
+        method: 'GET',
+        url: '/items/search?q=x',
+        headers: auth(auctioneerA.token),
+      });
+      const { imageUrl } = search.json().items[0];
+      const response = await app.inject({ method: 'GET', url: imageUrl });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toBe('image/png');
+    });
+
+    it.each([
+      ['texto qualquer', 'img-900001'],
+      ['tentativa de caminho', '..%2F..%2Fapi%2Fv1%2Fartworks'],
+      ['URL externa', encodeURIComponent('http://169.254.169.254/latest')],
+      ['UUID com sufixo', `${IMG_900001}x`],
+    ])('id inválido (%s) → 400 sem chamar a API de itens', async (_label, imageId) => {
+      mock.requests.length = 0;
+      const response = await app.inject({
+        method: 'GET',
+        url: `/items/images/${imageId}/thumbnail`,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe('VALIDATION_ERROR');
+      expect(mock.requests).toHaveLength(0);
+    });
+
+    it('imagem que a AIC não tem → 404 ITEM_NOT_FOUND, sem cache', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/items/images/0a000000-0000-4000-8000-0000000fffff/thumbnail',
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.code).toBe('ITEM_NOT_FOUND');
+      expect(response.headers['cache-control']).toBeUndefined();
+    });
+
+    it('AIC fora do ar → 502 EXTERNAL_API_UNAVAILABLE, sem vazar detalhes', async () => {
+      mock.setMode('down');
+      const response = await app.inject({
+        method: 'GET',
+        url: `/items/images/${IMG_900001}/thumbnail`,
+      });
+      expect(response.statusCode).toBe(502);
+      const body = response.json();
+      expect(body.error.code).toBe('EXTERNAL_API_UNAVAILABLE');
+      expect(JSON.stringify(body)).not.toMatch(/127\.0\.0\.1|iiif|fora do ar/);
+      expect(response.headers['cache-control']).toBeUndefined();
+    });
+
+    it('AIC lenta → 502 pelo timeout', async () => {
+      mock.setMode('slow');
+      const response = await app.inject({
+        method: 'GET',
+        url: `/items/images/${IMG_900001}/thumbnail`,
+      });
+      expect(response.statusCode).toBe(502);
+      expect(response.json().error.code).toBe('EXTERNAL_API_UNAVAILABLE');
     });
   });
 

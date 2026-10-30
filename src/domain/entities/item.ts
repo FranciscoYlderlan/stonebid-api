@@ -11,7 +11,9 @@ export interface ItemAttributes {
 export interface CatalogItem {
   externalId: string;
   title: string;
-  /** URL da imagem na API externa. Só a busca do painel usa; o lote guarda a cópia (RN-13). */
+  /** Id da imagem na API externa; a miniatura da busca sai por `GET /items/images/:imageId/thumbnail`. */
+  imageId: string;
+  /** URL da imagem na API externa, só para o servidor copiar na criação do lote (RN-13). */
   imageUrl: string;
   attributes: ItemAttributes;
 }
