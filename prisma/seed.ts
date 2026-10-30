@@ -3,7 +3,9 @@
  * dá aos licitantes um depósito inicial com chave de idempotência fixa (não duplica ao rodar
  * de novo), cria três lotes do leiloeiro (ao vivo, agendado e encerrado), com imagens de
  * prisma/seed-assets/, e dá três lances no lote ao vivo pelo caso de uso real (hash, selo,
- * saldo comprometido e devolvido), com chaves de idempotência fixas.
+ * saldo comprometido e devolvido), com chaves de idempotência fixas. O lote encerrado recebe três
+ * lances dados no passado (relógio injetado, dentro da janela do lote) e é liquidado pelo próprio
+ * caso de uso, com comprovante, para a demonstração (decisão "seed com lote liquidado").
  */
 import { readFile } from 'node:fs/promises';
 import { hashPassword } from '../src/application/password-hashing.ts';
@@ -12,6 +14,7 @@ import type { Role } from '../src/domain/entities/user.ts';
 import { AppError } from '../src/domain/errors/app-error.ts';
 import { env } from '../src/env/index.ts';
 import { makePlaceBidUseCase } from '../src/infra/factories/make-place-bid-use-case.ts';
+import { makeSettleLotUseCase } from '../src/infra/factories/make-settle-lot-use-case.ts';
 import { prisma } from '../src/infra/repositories/prisma/prisma-client.ts';
 
 const seedUsers: { name: string; email: string; role: Role }[] = [
@@ -104,6 +107,43 @@ const seedBids: { key: string; email: string; amountCents: number }[] = [
   { key: 'seed-bid-3', email: 'licitante-1@stonebid.dev', amountCents: 60_000 },
 ];
 
+/** Lances do lote encerrado (seed-3: inicial R$ 300,00, incremento R$ 25,00), em ordem. */
+const seedEndedBids: { key: string; email: string; amountCents: number }[] = [
+  { key: 'seed-ended-bid-1', email: 'licitante-2@stonebid.dev', amountCents: 30_000 },
+  { key: 'seed-ended-bid-2', email: 'licitante-1@stonebid.dev', amountCents: 32_500 },
+  { key: 'seed-ended-bid-3', email: 'licitante-2@stonebid.dev', amountCents: 35_000 },
+];
+
+/**
+ * Dá os lances pelo caso de uso real. `at(i)` devolve a hora do lance i (relógio injetado); rodar
+ * de novo repete a chave e devolve o lance já gravado (RN-18), sem lance novo.
+ */
+async function placeSeedBids(
+  lot: SeedLot,
+  bids: { key: string; email: string; amountCents: number }[],
+  at?: (index: number) => Date,
+): Promise<void> {
+  for (const [index, seedBid] of bids.entries()) {
+    const bidder = await prisma.user.findUniqueOrThrow({ where: { email: seedBid.email } });
+    const placeBid = makePlaceBidUseCase(at ? () => at(index) : undefined);
+    try {
+      const { bid, created } = await placeBid.execute({
+        lotId: lot.id,
+        bidderId: bidder.id,
+        amountCents: seedBid.amountCents,
+        idempotencyKey: seedBid.key,
+      });
+      console.log(
+        `seed: lance ${bid.seq} no ${lot.externalId} (${bid.pseudonym}, ${created ? 'criado' : 'já existia'})`,
+      );
+    } catch (error) {
+      // Lote já encerrado ou com lances maiores (ambiente com uso real): o seed não força.
+      if (!(error instanceof AppError)) throw error;
+      console.log(`seed: lance ${seedBid.key} pulado (${error.code}: ${error.message})`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   if (!env.SEED_PASSWORD) throw new Error('Defina SEED_PASSWORD para rodar o seed.');
   const passwordHash = await hashPassword(env.SEED_PASSWORD);
@@ -163,28 +203,21 @@ async function main(): Promise<void> {
     console.log(`seed: lote ${lot.externalId} (${lot.title})`);
   }
 
-  // Pelo caso de uso: a mesma regra, a mesma cadeia de hash e o mesmo extrato da API. Rodar de
-  // novo repete a chave e devolve o lance já gravado (RN-18), sem lance novo.
-  const placeBid = makePlaceBidUseCase();
-  const liveLot = seedLots[0]!;
-  for (const seedBid of seedBids) {
-    const bidder = await prisma.user.findUniqueOrThrow({ where: { email: seedBid.email } });
-    try {
-      const { bid, created } = await placeBid.execute({
-        lotId: liveLot.id,
-        bidderId: bidder.id,
-        amountCents: seedBid.amountCents,
-        idempotencyKey: seedBid.key,
-      });
-      console.log(
-        `seed: lance ${bid.seq} no ${liveLot.externalId} (${bid.pseudonym}, ${created ? 'criado' : 'já existia'})`,
-      );
-    } catch (error) {
-      // Lote já encerrado ou com lances maiores (ambiente com uso real): o seed não força.
-      if (!(error instanceof AppError)) throw error;
-      console.log(`seed: lance ${seedBid.key} pulado (${error.code}: ${error.message})`);
-    }
-  }
+  // Pelo caso de uso: a mesma regra, a mesma cadeia de hash e o mesmo extrato da API.
+  await placeSeedBids(seedLots[0]!, seedBids);
+
+  // Lote encerrado: lances a 1/4, 2/4 e 3/4 da janela gravada (as datas não mudam ao rodar de
+  // novo), longe do anti-sniping, e liquidação no instante do fim. A liquidação é idempotente.
+  const endedLot = seedLots[2]!;
+  const ended = await prisma.lot.findUniqueOrThrow({ where: { id: endedLot.id } });
+  const start = ended.startsAt.getTime();
+  const step = (ended.endsAt.getTime() - start) / (seedEndedBids.length + 1);
+  await placeSeedBids(endedLot, seedEndedBids, (index) => new Date(start + step * (index + 1)));
+  const settled = await makeSettleLotUseCase(() => ended.endsAt).execute(endedLot.id);
+  console.log(
+    `seed: liquidação do ${endedLot.externalId} (${settled?.lot.result ?? 'sem lote'}, ` +
+      `${settled?.settled ? 'feita agora' : 'já existia'}, comprovante ${settled?.lot.receiptPublicId ?? '—'})`,
+  );
 }
 
 main()

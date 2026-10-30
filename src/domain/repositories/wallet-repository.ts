@@ -9,6 +9,8 @@ export interface CreateDepositInput {
 export interface WalletRepository {
   /** Soma dos valores por tipo de movimento do usuário. */
   totalsByType(userId: string): Promise<Partial<MovementTotals>>;
+  /** Soma dos CREDIT de liquidação do usuário (total recebido pelo leiloeiro, RF-24). */
+  sumSettlementCredits(userId: string): Promise<number>;
   /** Extrato do usuário, mais recentes primeiro. */
   listByUser(userId: string): Promise<WalletMovement[]>;
   findByIdempotencyKey(userId: string, idempotencyKey: string): Promise<WalletMovement | null>;

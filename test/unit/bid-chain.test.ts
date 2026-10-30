@@ -52,13 +52,13 @@ describe('cadeia de hash e selos (M-12)', () => {
   it('hash = SHA-256 do array em ordem fixa; gênese = SHA-256("genesis:" + lotId)', () => {
     const createdAt = new Date('2026-10-30T12:00:00.123Z');
     const expected = createHash('sha256')
-      .update(JSON.stringify(['v1', lotId, 1, 'Licitante 7F3A', 500, createdAt.getTime(), 'abc']))
+      .update(JSON.stringify(['v1', lotId, 1, 'Licitante 7F3A9C', 500, createdAt.getTime(), 'abc']))
       .digest('hex');
     expect(
       computeBidHash({
         lotId,
         seq: 1,
-        pseudonym: 'Licitante 7F3A',
+        pseudonym: 'Licitante 7F3A9C',
         amountCents: 500,
         createdAt,
         prevHash: 'abc',
@@ -78,14 +78,14 @@ describe('cadeia de hash e selos (M-12)', () => {
     expect(seal('s', 'bid:v1', hash)).not.toBe(seal('s', 'head:v1', hash));
   });
 
-  it('pseudônimo: estável no lote, muda entre lotes, código de 4 dígitos em maiúsculas', () => {
+  it('pseudônimo: estável no lote, muda entre lotes, código de 6 dígitos em maiúsculas', () => {
     const a = pseudonymFor('segredo', lotId, 'ana');
-    expect(a).toMatch(/^Licitante [0-9A-F]{4}$/);
+    expect(a).toMatch(/^Licitante [0-9A-F]{6}$/);
     expect(pseudonymFor('segredo', lotId, 'ana')).toBe(a);
     const code = createHmac('sha256', 'segredo')
       .update(`pseudonym:v1${lotId}ana`)
       .digest('hex')
-      .slice(0, 4)
+      .slice(0, 6)
       .toUpperCase();
     expect(a).toBe(`Licitante ${code}`);
     expect(pseudonymFor('segredo', '22222222-2222-4222-8222-222222222222', 'ana')).not.toBe(a);

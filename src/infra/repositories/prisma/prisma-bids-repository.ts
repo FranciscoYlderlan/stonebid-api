@@ -6,6 +6,7 @@ import {
   IdempotencyKeyReusedError,
 } from '../../../domain/errors/idempotency-key-reused-error.ts';
 import type {
+  BidderLotSummary,
   BidsRepository,
   LockedBidState,
   PlaceBidRequest,
@@ -14,7 +15,7 @@ import type {
 } from '../../../domain/repositories/bids-repository.ts';
 import { Prisma } from './generated/client.ts';
 import { prisma } from './prisma-client.ts';
-import { isUuid, lockLotRow, omitImage, toLot, type PrismaTx } from './prisma-lots-repository.ts';
+import { isUuid, lockLotRow, lotQuery, toLot, type PrismaTx } from './prisma-lots-repository.ts';
 
 /** Lances (RN-09, RN-14): só insere lances; nunca edita nem apaga. */
 export class PrismaBidsRepository implements BidsRepository {
@@ -77,8 +78,10 @@ export class PrismaBidsRepository implements BidsRepository {
               headSeq: decision.seq,
               headHash: decision.hash,
               headSeal: decision.headSeal,
+              // Anti-sniping (RN-10): o fim muda na mesma transação, com o lote travado.
+              endsAt: decision.endsAt,
             },
-            omit: omitImage,
+            ...lotQuery,
           });
 
           return { bid, lot: toLot(updated), created: true };
@@ -104,6 +107,24 @@ export class PrismaBidsRepository implements BidsRepository {
     return prisma.bid.findMany({ where: { lotId }, orderBy: { seq: 'desc' } });
   }
 
+  async listLotsByBidder(bidderId: string): Promise<BidderLotSummary[]> {
+    if (!isUuid(bidderId)) return [];
+    const groups = await prisma.bid.groupBy({
+      by: ['lotId'],
+      where: { bidderId },
+      _max: { amountCents: true, createdAt: true },
+    });
+    return groups
+      .map((group) => ({
+        lotId: group.lotId,
+        maxAmountCents: group._max.amountCents ?? 0,
+        lastBidAt: group._max.createdAt ?? new Date(0),
+      }))
+      .sort(
+        (a, b) => b.lastBidAt.getTime() - a.lastBidAt.getTime() || a.lotId.localeCompare(b.lotId),
+      );
+  }
+
   /**
    * Trava o lote e depois a carteira do licitante, sempre nessa ordem (nunca o contrário), e lê
    * o estado. `null` se o lote não existe. Protegido para o teste de corrida forçar uma janela.
@@ -113,7 +134,7 @@ export class PrismaBidsRepository implements BidsRepository {
     request: PlaceBidRequest,
   ): Promise<LockedBidState | null> {
     if (!(await this.lockLot(tx, request.lotId))) return null;
-    const lot = await tx.lot.findUniqueOrThrow({ where: { id: request.lotId }, omit: omitImage });
+    const lot = await tx.lot.findUniqueOrThrow({ where: { id: request.lotId }, ...lotQuery });
 
     const previous = await tx.bid.findUnique({
       where: {

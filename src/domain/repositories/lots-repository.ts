@@ -28,6 +28,10 @@ export interface LotsRepository {
   /** Lotes não cancelados das obras, numa consulta só (situação da obra na busca, RN-19). */
   listNotCanceledByExternalIds(externalIds: readonly string[]): Promise<Lot[]>;
   findById(id: string): Promise<Lot | null>;
+  /** Lotes pelos ids, numa consulta só (sem ordem garantida; ids inválidos são ignorados). */
+  findManyByIds(ids: readonly string[]): Promise<Lot[]>;
+  /** Ids dos lotes vencidos e ainda não liquidados nem cancelados, fim mais antigo primeiro (AD-08). */
+  listDueForSettlement(now: Date, limit: number): Promise<string[]>;
   findImage(id: string): Promise<ItemImage | null>;
   /** Não cancelados com início ≤ agora < fim, fim mais próximo primeiro. */
   listLive(now: Date): Promise<Lot[]>;
@@ -40,7 +44,7 @@ export interface LotsRepository {
   /**
    * Cancela numa transação que trava a linha do lote (`FOR UPDATE`), a mesma trava do lance
    * (RN-09, M-13): `decide` recebe o lote lido sob a trava, lança o erro da recusa ou devolve a
-   * hora do cancelamento. `null` se o lote não existe.
+   * hora do cancelamento, gravada junto com o motivo. `null` se o lote não existe.
    */
-  cancel(id: string, decide: (lot: Lot) => Date): Promise<Lot | null>;
+  cancel(id: string, reason: string, decide: (lot: Lot) => Date): Promise<Lot | null>;
 }

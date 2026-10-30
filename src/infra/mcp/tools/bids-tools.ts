@@ -49,12 +49,25 @@ export function registerBidsTools(
       title: 'Histórico de lances',
       description:
         'GET /lots/:id/bids: lances do lote, do mais novo para o mais antigo, com pseudônimo ' +
-        '("Licitante 7F3A"), sem nome, e-mail nem id do licitante. Público.',
+        '("Licitante 7F3A9C"), sem nome, e-mail nem id do licitante. Público.',
       inputSchema: lotIdInput,
     },
     async ({ id }) =>
       toToolResult(
         await callRoute(app, { method: 'GET', url: `/lots/${encodeURIComponent(id)}/bids` }),
       ),
+  );
+
+  server.registerTool(
+    'bids_mine',
+    {
+      title: 'Meus lances',
+      description:
+        'GET /me/bids: lotes em que o licitante da sessão deu lance, mais recentes primeiro, com ' +
+        'myMaxBidCents, position (LEADING, OUTBID, WON, LOST ou CANCELED) e receiptPublicId (só ' +
+        'em WON). Só licitante.',
+    },
+    async () =>
+      toToolResult(await callRoute(app, { method: 'GET', url: '/me/bids', token: state.token })),
   );
 }
