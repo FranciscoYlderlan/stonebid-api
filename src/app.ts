@@ -5,6 +5,7 @@ import { env } from './env/index.ts';
 import { registerErrorHandler } from './infra/http/errors/error-handler.ts';
 import { authRoutes } from './infra/http/routes/auth-routes.ts';
 import { healthRoutes } from './infra/http/routes/health-routes.ts';
+import { walletRoutes } from './infra/http/routes/wallet-routes.ts';
 import { mcpPlugin } from './infra/mcp/plugin.ts';
 
 export interface BuildAppOptions {
@@ -23,13 +24,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(cors, {
     origin: env.CORS_ORIGIN,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
   });
 
   await app.register(jwt, { secret: env.JWT_SECRET });
 
   await app.register(healthRoutes);
   await app.register(authRoutes);
+  await app.register(walletRoutes);
 
   if (options.mcpEnabled ?? env.MCP_ENABLED) {
     await app.register(mcpPlugin);
