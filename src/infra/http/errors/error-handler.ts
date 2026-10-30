@@ -19,6 +19,7 @@ const statusByCode: Record<string, number> = {
   IDEMPOTENCY_KEY_REUSED: 409,
   DEPOSIT_LIMIT_EXCEEDED: 400,
   LOT_NOT_CANCELABLE: 409,
+  ITEM_ALREADY_AUCTIONED: 409,
   ITEM_IMAGE_TOO_LARGE: 422,
   TOO_MANY_REQUESTS: 429,
   EXTERNAL_API_UNAVAILABLE: 502,
@@ -50,7 +51,13 @@ export function registerErrorHandler(app: FastifyInstance): void {
     }
 
     if (error instanceof AppError) {
-      return sendError(reply, statusByCode[error.code] ?? 400, error.code, error.message);
+      return sendError(
+        reply,
+        statusByCode[error.code] ?? 400,
+        error.code,
+        error.message,
+        error.details,
+      );
     }
 
     const statusCode = 'statusCode' in error ? error.statusCode : undefined;

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ItemCatalog } from '../../../domain/catalog/item-catalog.ts';
+import type { LotBidsReader } from '../../../domain/repositories/lot-bids-reader.ts';
 import { getItemThumbnailController } from '../controllers/items/get-item-thumbnail-controller.ts';
 import { searchItemsController } from '../controllers/items/search-items-controller.ts';
 import { requireRole } from '../middlewares/require-role.ts';
@@ -12,6 +13,7 @@ export const THUMBNAIL_RATE_LIMIT = { max: 120, timeWindow: '1 minute' } as cons
 
 export interface ItemsRoutesOptions {
   catalog: ItemCatalog;
+  bidsReader: LotBidsReader;
 }
 
 export async function itemsRoutes(
@@ -21,7 +23,7 @@ export async function itemsRoutes(
   app.get(
     '/items/search',
     { preHandler: requireRole('AUCTIONEER') },
-    searchItemsController(options.catalog),
+    searchItemsController(options.catalog, options.bidsReader),
   );
 
   // Pública: o `<img>` não manda o JWT do cabeçalho, e as imagens são de domínio público.

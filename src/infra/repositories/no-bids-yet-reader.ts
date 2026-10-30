@@ -5,4 +5,8 @@ export class NoBidsYetReader implements LotBidsReader {
   async hasBids(_lotId: string): Promise<boolean> {
     return false;
   }
+
+  async listLotIdsWithBids(_lotIds: readonly string[]): Promise<Set<string>> {
+    return new Set();
+  }
 }

@@ -13,8 +13,20 @@ export interface CreateLotInput {
   endsAt: Date;
 }
 
+/**
+ * Chamado pelo repositório com a obra travada e os lotes não cancelados dela (RN-19).
+ * Lança erro para recusar a criação; nada é gravado.
+ */
+export type AssertItemAvailable = (lotsOfItem: Lot[]) => Promise<void>;
+
 export interface LotsRepository {
-  create(data: CreateLotInput): Promise<Lot>;
+  /**
+   * Cria o lote numa transação que trava a obra (`externalId`): dois pedidos para a mesma obra
+   * passam um de cada vez, e `assertItemAvailable` vê os lotes já gravados antes de inserir.
+   */
+  create(data: CreateLotInput, assertItemAvailable: AssertItemAvailable): Promise<Lot>;
+  /** Lotes não cancelados das obras, numa consulta só (situação da obra na busca, RN-19). */
+  listNotCanceledByExternalIds(externalIds: readonly string[]): Promise<Lot[]>;
   findById(id: string): Promise<Lot | null>;
   findImage(id: string): Promise<ItemImage | null>;
   /** Não cancelados com início ≤ agora < fim, fim mais próximo primeiro. */
