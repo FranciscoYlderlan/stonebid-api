@@ -4,7 +4,13 @@ import { buildApp } from '../../src/app.ts';
 import { AIC_USER_AGENT } from '../../src/infra/external/artic-item-catalog.ts';
 import { prisma } from '../../src/infra/repositories/prisma/prisma-client.ts';
 import { registerUser } from './helpers.ts';
-import { IMG_900001, MOCK_IMAGE, startItemsApiMock, type ItemsApiMock } from './items-api-mock.ts';
+import {
+  IMG_900001,
+  IMG_900003,
+  MOCK_IMAGE,
+  startItemsApiMock,
+  type ItemsApiMock,
+} from './items-api-mock.ts';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -189,11 +195,12 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
       expect(response.headers['cache-control']).toBeUndefined();
     });
 
+    // IMG_900003: o IMG_900001 já está no cache da miniatura e não iria à AIC.
     it('AIC fora do ar → 502 EXTERNAL_API_UNAVAILABLE, sem vazar detalhes', async () => {
       mock.setMode('down');
       const response = await app.inject({
         method: 'GET',
-        url: `/items/images/${IMG_900001}/thumbnail`,
+        url: `/items/images/${IMG_900003}/thumbnail`,
       });
       expect(response.statusCode).toBe(502);
       const body = response.json();
@@ -206,10 +213,19 @@ describe('lotes e API de itens (RF-10, RF-20 a RF-22, RF-25)', () => {
       mock.setMode('slow');
       const response = await app.inject({
         method: 'GET',
-        url: `/items/images/${IMG_900001}/thumbnail`,
+        url: `/items/images/${IMG_900003}/thumbnail`,
       });
       expect(response.statusCode).toBe(502);
       expect(response.json().error.code).toBe('EXTERNAL_API_UNAVAILABLE');
+    });
+
+    it('falha não fica no cache: com a AIC de volta, o mesmo id responde 200', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/items/images/${IMG_900003}/thumbnail`,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(Buffer.compare(response.rawPayload, MOCK_IMAGE)).toBe(0);
     });
   });
 
