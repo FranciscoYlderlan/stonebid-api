@@ -14,6 +14,8 @@ const statusByCode: Record<string, number> = {
   FORBIDDEN: 403,
   NOT_FOUND: 404,
   EMAIL_TAKEN: 409,
+  IDEMPOTENCY_KEY_REUSED: 409,
+  DEPOSIT_LIMIT_EXCEEDED: 400,
 };
 
 export function sendError(

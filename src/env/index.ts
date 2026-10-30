@@ -25,6 +25,8 @@ const envSchema = z
     SEED_PASSWORD: z.string().min(8).optional(),
     MCP_ENABLED: booleanFromString,
     MCP_API_KEY: z.string().min(16, 'MCP_API_KEY precisa de pelo menos 16 caracteres').optional(),
+    // Teto por depósito em centavos (Q-10). Padrão: R$ 10.000,00.
+    DEPOSIT_LIMIT_CENTS: z.coerce.number().int().positive().default(1_000_000),
   })
   .superRefine((env, ctx) => {
     if (!env.MCP_ENABLED) return;
