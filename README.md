@@ -405,3 +405,7 @@ test/
 ├── unit/                # regras puras (lance, anti-sniping, auditoria, cadeia, caches)
 └── e2e/                 # rotas com banco real e AIC simulada
 ```
+
+## Uso de IA
+
+Como usei IA neste projeto (orquestração de subagentes, memória no Obsidian e quem definiu, aplicou e refinou cada parte): [docs/uso-de-ia.md](https://github.com/FranciscoYlderlan/stonebid-web/blob/main/docs/uso-de-ia.md), no repositório `stonebid-web`.
