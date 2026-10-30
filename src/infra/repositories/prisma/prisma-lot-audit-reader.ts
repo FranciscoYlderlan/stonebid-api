@@ -3,7 +3,7 @@ import { prisma } from './prisma-client.ts';
 import { isUuid, lotQuery, toLot } from './prisma-lots-repository.ts';
 
 /**
- * Leitura da auditoria (RF-60): lote, lances, comprovante e DEBIT/CREDIT do lote numa transação
+ * Leitura da auditoria (RF-60): lote, lances, comprovante e DEBIT/CREDIT/REFUND do lote numa transação
  * `REPEATABLE READ`, para um lance que entra no meio não parecer adulteração da cabeça.
  */
 export class PrismaLotAuditReader implements LotAuditReader {
@@ -27,7 +27,7 @@ export class PrismaLotAuditReader implements LotAuditReader {
         }),
         prisma.receipt.findUnique({ where: { lotId } }),
         prisma.walletMovement.findMany({
-          where: { lotId, type: { in: ['DEBIT', 'CREDIT'] } },
+          where: { lotId, type: { in: ['DEBIT', 'CREDIT', 'REFUND'] } },
           orderBy: { seq: 'asc' },
           select: { type: true, userId: true, amountCents: true },
         }),
@@ -35,7 +35,7 @@ export class PrismaLotAuditReader implements LotAuditReader {
       { isolationLevel: 'RepeatableRead' },
     );
     if (!lot) return null;
-    const only = (type: 'DEBIT' | 'CREDIT') =>
+    const only = (type: 'DEBIT' | 'CREDIT' | 'REFUND') =>
       movements
         .filter((movement) => movement.type === type)
         .map(({ userId, amountCents }) => ({ userId, amountCents }));
@@ -56,6 +56,7 @@ export class PrismaLotAuditReader implements LotAuditReader {
         : null,
       debits: only('DEBIT'),
       credits: only('CREDIT'),
+      refunds: only('REFUND'),
     };
   }
 }

@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.ts';
+import { CancelLotUseCase } from '../../src/application/use-cases/cancel-lot.ts';
 import { PlaceBidUseCase } from '../../src/application/use-cases/place-bid.ts';
 import { computeBidHash, pseudonymFor, sealBid } from '../../src/domain/integrity/bid-chain.ts';
 import { PrismaBidsRepository } from '../../src/infra/repositories/prisma/prisma-bids-repository.ts';
 import { prisma } from '../../src/infra/repositories/prisma/prisma-client.ts';
+import { PrismaLotsRepository } from '../../src/infra/repositories/prisma/prisma-lots-repository.ts';
 import { PrismaWalletRepository } from '../../src/infra/repositories/prisma/prisma-wallet-repository.ts';
 import { testEnv } from '../test-env.ts';
 import { registerUser, uniqueEmail } from './helpers.ts';
@@ -290,6 +292,56 @@ describe('auditoria depois da liquidação: comprovante e extrato (T-06)', () =>
 
     const { body } = await audit(lotId);
     expect(body.firstInconsistency).toEqual({ seq: 1, reason: 'CONTENT_CHANGED' });
+  });
+});
+
+describe('auditoria do lote cancelado com lances: estorno (T-06, T-10b, OPC-2)', () => {
+  /** Lote ao vivo com 3 lances (Ana lidera com R$ 120), cancelado com o OPC-2 ligado. */
+  async function canceledWithBids() {
+    const { lotId, users } = await lotWithThreeBids(false);
+    const [auctioneer, ana] = users;
+    await new CancelLotUseCase(new PrismaLotsRepository(), undefined, undefined, true).execute({
+      lotId,
+      auctioneerId: auctioneer!.id,
+      reason: 'Obra retirada pelo comitente',
+    });
+    return { lotId, ana: ana! };
+  }
+
+  it('íntegro: um REFUND do líder no valor do lance atual; status CANCELED e lances visíveis', async () => {
+    const { lotId } = await canceledWithBids();
+    const { response, body } = await audit(lotId);
+    expect(response.statusCode).toBe(200);
+    expect(body.verdict).toBe('INTACT');
+    expect(body.lot.status).toBe('CANCELED');
+    expect(body.bids).toHaveLength(3);
+  });
+
+  it('REFUND apagado → CANCEL_MISMATCH sem seq', async () => {
+    const { lotId } = await canceledWithBids();
+    await prisma.$executeRaw`DELETE FROM "wallet_movements"
+      WHERE "lot_id" = ${lotId}::uuid AND "type" = 'REFUND'`;
+    const { body } = await audit(lotId);
+    expect(body.verdict).toBe('TAMPERED');
+    expect(body.firstInconsistency).toEqual({ seq: null, reason: 'CANCEL_MISMATCH' });
+  });
+
+  it('REFUND duplicado → CANCEL_MISMATCH sem seq', async () => {
+    const { lotId, ana } = await canceledWithBids();
+    await prisma.walletMovement.create({
+      data: { userId: ana.id, type: 'REFUND', amountCents: 12_000, lotId },
+    });
+    const { body } = await audit(lotId);
+    expect(body.firstInconsistency).toEqual({ seq: null, reason: 'CANCEL_MISMATCH' });
+  });
+
+  it('REFUND num lote não cancelado → CANCEL_MISMATCH sem seq', async () => {
+    const { lotId, users } = await lotWithThreeBids(false);
+    await prisma.walletMovement.create({
+      data: { userId: users[1]!.id, type: 'REFUND', amountCents: 12_000, lotId },
+    });
+    const { body } = await audit(lotId);
+    expect(body.firstInconsistency).toEqual({ seq: null, reason: 'CANCEL_MISMATCH' });
   });
 });
 

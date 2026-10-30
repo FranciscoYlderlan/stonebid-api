@@ -13,7 +13,8 @@ import {
 /**
  * Auditoria pública do lote (RF-60, RF-61): recalcula tudo a cada leitura, nada é guardado.
  * Ordem dos testes: a cadeia (primeiro lance inconsistente) e a cabeça selada, o comprovante, a
- * liquidação contra o extrato e, por último, lance atual e líder do lote contra o último lance.
+ * liquidação contra o extrato, o estorno do cancelamento e, por último, lance atual e líder do
+ * lote contra o último lance.
  */
 
 export type AuditReason =
@@ -23,7 +24,8 @@ export type AuditReason =
   | 'BROKEN_LINK'
   | 'HEAD_MISMATCH'
   | 'RECEIPT_MISMATCH'
-  | 'SETTLEMENT_MISMATCH';
+  | 'SETTLEMENT_MISMATCH'
+  | 'CANCEL_MISMATCH';
 
 export type AuditVerdict = 'INTACT' | 'TAMPERED';
 
@@ -38,7 +40,7 @@ export interface AuditResult {
   firstInconsistency: AuditInconsistency | null;
 }
 
-/** Movimento de liquidação do lote (DEBIT do vencedor ou CREDIT do leiloeiro), como está no extrato. */
+/** Movimento do lote no extrato (DEBIT, CREDIT ou REFUND), como está gravado. */
 export interface AuditMovement {
   userId: string;
   amountCents: number;
@@ -54,6 +56,8 @@ export interface LotAuditInput {
   leaderId: string | null;
   /** Leiloeiro dono do lote (quem recebe o CREDIT da liquidação). */
   auctioneerId: string;
+  /** Hora do cancelamento; `null` se o lote não foi cancelado. */
+  canceledAt: Date | null;
   /** Hora e resultado gravados na liquidação; `null` até liquidar. */
   settledAt: Date | null;
   result: LotResult | null;
@@ -63,6 +67,8 @@ export interface LotAuditInput {
   debits: readonly AuditMovement[];
   /** Movimentos CREDIT do extrato ligados ao lote. */
   credits: readonly AuditMovement[];
+  /** Movimentos REFUND do extrato ligados ao lote (estorno do cancelamento, OPC-2). */
+  refunds: readonly AuditMovement[];
 }
 
 const INTACT: AuditResult = { verdict: 'INTACT', firstInconsistency: null };
@@ -120,6 +126,16 @@ function settlementOk(input: LotAuditInput, last: ChainBid | undefined): boolean
 }
 
 /**
+ * Estorno do cancelamento (OPC-2, RF-23): lote cancelado com lances tem exatamente um `REFUND`, do
+ * licitante do último lance e no valor dele; qualquer outro lote (cancelado sem lances, ao vivo,
+ * encerrado, liquidado) não tem nenhum. Apagar ou duplicar o estorno não passa.
+ */
+function cancelOk(input: LotAuditInput, last: ChainBid | undefined): boolean {
+  if (input.canceledAt === null || last === undefined) return input.refunds.length === 0;
+  return onlyMovement(input.refunds, last.bidderId, last.amountCents);
+}
+
+/**
  * Lance atual e líder (RN-04, RN-07): gravados na mesma transação da cabeça, são o valor e o
  * licitante do último lance; lote sem lances não tem nenhum dos dois.
  */
@@ -136,6 +152,7 @@ export function auditLot(input: LotAuditInput, secrets: ChainSecrets): AuditResu
   const last = [...input.bids].sort((a, b) => a.seq - b.seq).at(-1);
   if (!receiptOk(input, last, secrets)) return tampered(null, 'RECEIPT_MISMATCH');
   if (!settlementOk(input, last)) return tampered(null, 'SETTLEMENT_MISMATCH');
+  if (!cancelOk(input, last)) return tampered(null, 'CANCEL_MISMATCH');
   if (!leaderOk(input, last)) return tampered(null, 'HEAD_MISMATCH');
   return INTACT;
 }

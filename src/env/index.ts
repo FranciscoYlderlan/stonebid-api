@@ -29,6 +29,8 @@ const envSchema = z
     PSEUDONYM_SECRET: z.string().min(32, 'PSEUDONYM_SECRET precisa de pelo menos 32 caracteres'),
     MCP_ENABLED: booleanFromString,
     MCP_API_KEY: z.string().min(16, 'MCP_API_KEY precisa de pelo menos 16 caracteres').optional(),
+    // OPC-2 (RF-23): cancelar lote com lances, com estorno ao líder. Ligado em produção e staging.
+    CANCEL_WITH_BIDS_ENABLED: booleanFromString,
     // Teto por depósito em centavos (Q-10). Padrão: R$ 10.000,00.
     DEPOSIT_LIMIT_CENTS: z.coerce.number().int().positive().default(1_000_000),
     // API pública de itens (AD-06): Art Institute of Chicago, sem chave.

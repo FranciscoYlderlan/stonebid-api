@@ -33,14 +33,18 @@ export interface WalletBalance {
 export type MovementTotals = Record<WalletMovementType, number>;
 
 /**
- * total = DEPOSIT + CREDIT + REFUND − DEBIT
- * comprometido = COMMIT − RELEASE
+ * total = DEPOSIT + CREDIT − DEBIT
+ * comprometido = COMMIT − RELEASE − REFUND
  * disponível = total − comprometido
+ *
+ * O `REFUND` é o estorno do cancelamento (OPC-2, RF-23): libera o comprometido do líder no lote
+ * cancelado. O total não muda, porque o dinheiro nunca saiu da carteira; o disponível volta ao
+ * de antes do lance.
  */
 export function computeBalance(totals: Partial<MovementTotals>): WalletBalance {
   const sum = (type: WalletMovementType) => totals[type] ?? 0;
-  const totalCents = sum('DEPOSIT') + sum('CREDIT') + sum('REFUND') - sum('DEBIT');
-  const committedCents = sum('COMMIT') - sum('RELEASE');
+  const totalCents = sum('DEPOSIT') + sum('CREDIT') - sum('DEBIT');
+  const committedCents = sum('COMMIT') - sum('RELEASE') - sum('REFUND');
   return { totalCents, committedCents, availableCents: totalCents - committedCents };
 }
 

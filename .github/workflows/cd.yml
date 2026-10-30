@@ -45,7 +45,8 @@ jobs:
               echo "cpu_flag=--no-cpu-throttling"
               echo "secrets=DATABASE_URL=DATABASE_URL:latest,JWT_SECRET=JWT_SECRET:latest,SEED_PASSWORD=SEED_PASSWORD:latest,SEAL_SECRET=SEAL_SECRET:latest,PSEUDONYM_SECRET=PSEUDONYM_SECRET:latest"
               # Delimitador ^@^ porque CORS_ORIGIN pode ter vírgulas.
-              echo "envs=^@^NODE_ENV=production@MCP_ENABLED=false@CORS_ORIGIN=${CORS_PROD}"
+              # CANCEL_WITH_BIDS_ENABLED: OPC-2, cancelar lote com lances com estorno ao líder.
+              echo "envs=^@^NODE_ENV=production@MCP_ENABLED=false@CANCEL_WITH_BIDS_ENABLED=true@CORS_ORIGIN=${CORS_PROD}"
             } >> "$GITHUB_OUTPUT"
           elif [ "$BRANCH" = "staging" ]; then
             {
@@ -56,7 +57,7 @@ jobs:
               echo "min=0"
               echo "cpu_flag=--cpu-throttling"
               echo "secrets=DATABASE_URL=DATABASE_URL_STAGING:latest,JWT_SECRET=JWT_SECRET_STAGING:latest,SEED_PASSWORD=SEED_PASSWORD:latest,MCP_API_KEY=MCP_API_KEY_STAGING:latest,SEAL_SECRET=SEAL_SECRET_STAGING:latest,PSEUDONYM_SECRET=PSEUDONYM_SECRET_STAGING:latest"
-              echo "envs=^@^NODE_ENV=production@MCP_ENABLED=true@CORS_ORIGIN=${CORS_STAGING}"
+              echo "envs=^@^NODE_ENV=production@MCP_ENABLED=true@CANCEL_WITH_BIDS_ENABLED=true@CORS_ORIGIN=${CORS_STAGING}"
             } >> "$GITHUB_OUTPUT"
           else
             echo "Branch $BRANCH não publica." && exit 1

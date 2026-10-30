@@ -1,5 +1,5 @@
 import type { ItemAttributes, ItemImage } from '../entities/item.ts';
-import type { Lot } from '../entities/lot.ts';
+import type { CancelRefund, Lot } from '../entities/lot.ts';
 
 export interface CreateLotInput {
   auctioneerId: string;
@@ -18,6 +18,12 @@ export interface CreateLotInput {
  * Lança erro para recusar a criação; nada é gravado.
  */
 export type AssertItemAvailable = (lotsOfItem: Lot[]) => Promise<void>;
+
+/** O que o cancelamento grava: a hora e, se o lote tem lances, o estorno do líder. */
+export interface CancelPlan {
+  canceledAt: Date;
+  refund: CancelRefund | null;
+}
 
 export interface LotsRepository {
   /**
@@ -44,7 +50,9 @@ export interface LotsRepository {
   /**
    * Cancela numa transação que trava a linha do lote (`FOR UPDATE`), a mesma trava do lance
    * (RN-09, M-13): `decide` recebe o lote lido sob a trava, lança o erro da recusa ou devolve a
-   * hora do cancelamento, gravada junto com o motivo. `null` se o lote não existe.
+   * hora do cancelamento e o estorno. Na mesma transação grava hora e motivo no lote e, se houver
+   * estorno, o `REFUND` do líder (OPC-2, RF-23). Líder, lance atual e cabeça ficam como estão.
+   * `null` se o lote não existe.
    */
-  cancel(id: string, reason: string, decide: (lot: Lot) => Date): Promise<Lot | null>;
+  cancel(id: string, reason: string, decide: (lot: Lot) => CancelPlan): Promise<Lot | null>;
 }

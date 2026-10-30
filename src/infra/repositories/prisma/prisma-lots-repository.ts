@@ -2,6 +2,7 @@ import type { ItemAttributes, ItemImage } from '../../../domain/entities/item.ts
 import type { Lot } from '../../../domain/entities/lot.ts';
 import type {
   AssertItemAvailable,
+  CancelPlan,
   CreateLotInput,
   LotsRepository,
 } from '../../../domain/repositories/lots-repository.ts';
@@ -141,7 +142,7 @@ export class PrismaLotsRepository implements LotsRepository {
     return lots.map(toLot);
   }
 
-  async cancel(id: string, reason: string, decide: (lot: Lot) => Date): Promise<Lot | null> {
+  async cancel(id: string, reason: string, decide: (lot: Lot) => CancelPlan): Promise<Lot | null> {
     if (!isUuid(id)) return null;
     return prisma.$transaction(
       async (tx) => {
@@ -149,12 +150,24 @@ export class PrismaLotsRepository implements LotsRepository {
         const locked = await lockLotRow(tx, id);
         if (!locked) return null;
         const lot = await tx.lot.findUniqueOrThrow({ where: { id }, ...lotQuery });
-        const canceledAt = decide(toLot(lot));
+        const { canceledAt, refund } = decide(toLot(lot));
         const canceled = await tx.lot.update({
           where: { id },
           data: { canceledAt, cancelReason: reason },
           ...lotQuery,
         });
+        // Estorno (OPC-2, RF-23): libera o comprometido do líder. A carteira dele não é travada,
+        // como no RELEASE do superado: o REFUND só aumenta o disponível.
+        if (refund) {
+          await tx.walletMovement.create({
+            data: {
+              userId: refund.userId,
+              type: 'REFUND',
+              amountCents: refund.amountCents,
+              lotId: id,
+            },
+          });
+        }
         return toLot(canceled);
       },
       { maxWait: 10_000, timeout: 15_000 },
