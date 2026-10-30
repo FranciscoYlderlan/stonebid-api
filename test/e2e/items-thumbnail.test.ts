@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { buildApp } from '../../src/app.ts';
+import { buildApp, TRUSTED_PROXY } from '../../src/app.ts';
 import { THUMBNAIL_RATE_LIMIT } from '../../src/infra/http/routes/items-routes.ts';
 import {
   IMG_900001,
@@ -102,5 +102,61 @@ describe('GET /items/images/:imageId/thumbnail: cache e limite (RF-20, T5g)', ()
     // Outro IP segue livre na mesma rota.
     const otherClient = await app.inject({ method: 'GET', url: thumbnailUrl(IMG_900001) });
     expect(otherClient.statusCode).toBe(200);
+  });
+});
+
+describe('GET /items/images/:imageId/thumbnail: IP real atrás do proxy do Cloud Run (T5h)', () => {
+  // Endereço do proxy interno do Cloud Run, dentro de TRUSTED_PROXY.
+  const proxy = '169.254.1.1';
+  let app: FastifyInstance;
+  let mock: ItemsApiMock;
+
+  beforeAll(async () => {
+    expect(TRUSTED_PROXY).toBe('169.254.0.0/16');
+    mock = await startItemsApiMock(300);
+    app = await buildApp({ itemCatalog: mock.catalog });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await mock.close();
+  });
+
+  // Id inválido: conta no limite (o limite roda antes da validação) sem ir à AIC.
+  const hit = (remoteAddress: string, forwardedFor?: string) =>
+    app.inject({
+      method: 'GET',
+      url: thumbnailUrl('x'),
+      remoteAddress,
+      headers: forwardedFor === undefined ? {} : { 'x-forwarded-for': forwardedFor },
+    });
+
+  const exhaust = async (remoteAddress: string, forwardedFor?: string) => {
+    for (let i = 0; i < THUMBNAIL_RATE_LIMIT.max; i += 1) {
+      const response = await hit(remoteAddress, forwardedFor);
+      expect(response.statusCode).toBe(400);
+    }
+    expect((await hit(remoteAddress, forwardedFor)).statusCode).toBe(429);
+  };
+
+  it('dois clientes pelo mesmo proxy têm baldes separados', async () => {
+    await exhaust(proxy, '198.51.100.10');
+    expect((await hit(proxy, '198.51.100.11')).statusCode).toBe(400);
+  });
+
+  it('X-Forwarded-For falso do cliente não tira ele do próprio balde', async () => {
+    const client = '198.51.100.20';
+    await exhaust(proxy, client);
+    // O Google Front End acrescenta o IP real no fim; o valor inventado fica à esquerda.
+    expect((await hit(proxy, `203.0.113.99, ${client}`)).statusCode).toBe(429);
+    expect((await hit(proxy, `169.254.9.9, ${client}`)).statusCode).toBe(429);
+  });
+
+  it('conexão fora do proxy confiável ignora o X-Forwarded-For', async () => {
+    const direct = '192.0.2.30';
+    await exhaust(direct, '198.51.100.30');
+    expect((await hit(direct, '198.51.100.31')).statusCode).toBe(429);
+    expect((await hit(direct)).statusCode).toBe(429);
   });
 });
