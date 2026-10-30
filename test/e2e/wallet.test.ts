@@ -81,7 +81,12 @@ describe('carteira (RF-40 a RF-42, RN-07, RN-16, RN-18, Q-10)', () => {
         lotId: null,
         createdAt: expect.any(String),
       },
-      wallet: { totalCents: 150_000, committedCents: 0, availableCents: 150_000 },
+      wallet: {
+        totalCents: 150_000,
+        committedCents: 0,
+        availableCents: 150_000,
+        depositLimitCents: LIMIT_CENTS,
+      },
     });
 
     const second = await deposit(token, 2_550);
@@ -133,8 +138,33 @@ describe('carteira (RF-40 a RF-42, RN-07, RN-16, RN-18, Q-10)', () => {
     expect(first.statusCode).toBe(201);
     expect(again.statusCode).toBe(200);
     expect(again.json().movement).toEqual(first.json().movement);
-    expect(again.json().wallet.totalCents).toBe(40_000);
+    expect(again.json().wallet).toEqual({
+      totalCents: 40_000,
+      committedCents: 0,
+      availableCents: 40_000,
+      depositLimitCents: LIMIT_CENTS,
+    });
     expect(await movements(token)).toHaveLength(1);
+  });
+
+  it('a carteira do depósito (201 e 200) tem o mesmo formato do GET /wallet, com o teto', async () => {
+    const { token } = await newBidder();
+    const key = randomUUID();
+
+    const created = await deposit(token, 12_345, key);
+    const replay = await deposit(token, 12_345, key);
+    const balance = await wallet(token);
+
+    expect(created.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(200);
+    expect(Object.keys(balance).sort()).toEqual([
+      'availableCents',
+      'committedCents',
+      'depositLimitCents',
+      'totalCents',
+    ]);
+    expect(created.json().wallet).toEqual(balance);
+    expect(replay.json().wallet).toEqual(balance);
   });
 
   it('T-11: duas requisições simultâneas com a mesma chave → 1 depósito', async () => {
@@ -319,6 +349,16 @@ describe('carteira pela camada MCP', () => {
     expect(created.status).toBe(201);
     expect(replay.status).toBe(200);
     expect(replay.body.movement).toEqual(created.body.movement);
+    // Mesmo formato do wallet_get (GET /wallet), com o teto, no 201 e no 200.
+    const walletShape = {
+      totalCents: totalBefore + 1_234,
+      committedCents: expect.any(Number),
+      availableCents: expect.any(Number),
+      depositLimitCents: before.body.depositLimitCents,
+    };
+    expect(before.body.depositLimitCents).toEqual(expect.any(Number));
+    expect(created.body.wallet).toEqual(walletShape);
+    expect(replay.body.wallet).toEqual(walletShape);
 
     const after = payloadOf(await client.callTool({ name: 'wallet_get', arguments: {} }));
     expect(after.body.totalCents).toBe(totalBefore + 1_234);
