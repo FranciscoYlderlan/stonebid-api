@@ -1,7 +1,7 @@
 import { CancelLotUseCase } from '../../application/use-cases/cancel-lot.ts';
-import { NoBidsYetReader } from '../repositories/no-bids-yet-reader.ts';
+import type { LotBidsReader } from '../../domain/repositories/lot-bids-reader.ts';
 import { PrismaLotsRepository } from '../repositories/prisma/prisma-lots-repository.ts';
 
-export function makeCancelLotUseCase(): CancelLotUseCase {
-  return new CancelLotUseCase(new PrismaLotsRepository(), new NoBidsYetReader());
+export function makeCancelLotUseCase(bidsReader: LotBidsReader): CancelLotUseCase {
+  return new CancelLotUseCase(new PrismaLotsRepository(), bidsReader);
 }

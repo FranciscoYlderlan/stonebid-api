@@ -16,7 +16,9 @@ export function registerItemsTools(
       description:
         'GET /items/search?q=&page=: busca obras com imagem no Art Institute of Chicago. ' +
         'Só leiloeiro (entre como leiloeiro antes). Use o externalId do resultado em lots_create. ' +
-        'O imageUrl de cada item é relativo à API (GET /items/images/{imageId}/thumbnail, público).',
+        'O imageUrl de cada item é relativo à API (GET /items/images/{imageId}/thumbnail, público). ' +
+        'Cada item traz auction (RN-19): null = livre para lote novo; { status: SCHEDULED | LIVE, lotId } ' +
+        '= em leilão; { status: SOLD, lotId } = vendida. Só itens com auction null aceitam lots_create.',
       inputSchema: searchItemsInputSchema.shape,
     },
     async ({ q, page }) => {

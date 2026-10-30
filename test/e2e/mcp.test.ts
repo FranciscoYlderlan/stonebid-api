@@ -203,6 +203,26 @@ describe('camada MCP: tools de itens e lotes', () => {
     expect(created.body.status).toBe('SCHEDULED');
     const id = created.body.id as string;
 
+    // RN-19: a mesma obra não ganha outro lote; a busca mostra a situação.
+    const again = await call('lots_create', {
+      externalId: item?.externalId,
+      startingBidCents: 20_000,
+      minIncrementCents: 1_000,
+      startsAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+      endsAt: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+    });
+    expect(again).toMatchObject({
+      status: 409,
+      body: {
+        error: { code: 'ITEM_ALREADY_AUCTIONED', details: { status: 'SCHEDULED', lotId: id } },
+      },
+    });
+    const searchAgain = await call('items_search', { q: 'paisagem', page: 1 });
+    expect((searchAgain.body.items as { auction: unknown }[])[0]?.auction).toEqual({
+      status: 'SCHEDULED',
+      lotId: id,
+    });
+
     const got = await call('lots_get', { id });
     expect(got).toMatchObject({ status: 200, body: { lot: { id, status: 'SCHEDULED' } } });
 

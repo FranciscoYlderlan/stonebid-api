@@ -18,7 +18,9 @@ export function registerLotsTools(
       title: 'Criar lote',
       description:
         'POST /lots: cria um lote a partir de um item da busca (externalId). Valores em centavos; ' +
-        'datas ISO 8601 em UTC. Início não pode estar no passado; fim ≥ início + 5 min. Só leiloeiro.',
+        'datas ISO 8601 em UTC. Início não pode estar no passado; fim ≥ início + 5 min. Só leiloeiro. ' +
+        'RN-19: obra com lote agendado, ao vivo ou arrematado → 409 ITEM_ALREADY_AUCTIONED, com ' +
+        'error.details { status, lotId } do lote que prende a obra.',
       inputSchema: createLotBodySchema.shape,
     },
     async (body) =>

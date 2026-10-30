@@ -1,13 +1,14 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { ItemCatalog } from '../../../../domain/catalog/item-catalog.ts';
+import type { LotBidsReader } from '../../../../domain/repositories/lot-bids-reader.ts';
 import { makeCreateLotUseCase } from '../../../factories/make-create-lot-use-case.ts';
 import { toLotDto } from '../../presenters/lot-presenter.ts';
 import { createLotBodySchema } from '../../schemas/lot-schemas.ts';
 
-export function createLotController(catalog: ItemCatalog) {
+export function createLotController(catalog: ItemCatalog, bidsReader: LotBidsReader) {
   return async function handler(request: FastifyRequest, reply: FastifyReply) {
     const body = createLotBodySchema.parse(request.body);
-    const { lot, now } = await makeCreateLotUseCase(catalog).execute({
+    const { lot, now } = await makeCreateLotUseCase(catalog, bidsReader).execute({
       auctioneerId: request.user.sub,
       externalId: body.externalId,
       startingBidCents: body.startingBidCents,
