@@ -41,6 +41,11 @@ interface SeedLot {
   /** Datas relativas ao momento em que o lote é criado pela primeira vez. */
   startsInMs: number;
   durationMs: number;
+  /**
+   * Renova o fim a cada execução do seed: se o lote ainda não foi liquidado nem cancelado, o fim
+   * passa a ser `agora + renewEndsInMs` (início e lances não mudam). Lote liquidado não reabre.
+   */
+  renewEndsInMs?: number;
 }
 
 const seedLots: SeedLot[] = [
@@ -58,9 +63,10 @@ const seedLots: SeedLot[] = [
     image: 'seed-1.png',
     startingBidCents: 50_000,
     minIncrementCents: 5_000,
-    // AO_VIVO: começou há 1 hora e termina em 14 dias.
+    // AO_VIVO: começou há 1 hora e termina 7 dias depois de cada execução do seed.
     startsInMs: -HOUR,
-    durationMs: 14 * DAY + HOUR,
+    durationMs: 7 * DAY + HOUR,
+    renewEndsInMs: 7 * DAY,
   },
   {
     id: '5eed0000-0000-4000-8000-000000000002',
@@ -194,13 +200,27 @@ async function main(): Promise<void> {
     const startsAt = new Date(now + lot.startsInMs);
     const endsAt = new Date(now + lot.startsInMs + lot.durationMs);
 
-    // As datas só são calculadas na primeira criação; rodar de novo não mexe nelas.
+    // As datas só são calculadas na primeira criação; rodar de novo não mexe nelas, salvo o fim
+    // dos lotes com `renewEndsInMs`.
     await prisma.lot.upsert({
       where: { id: lot.id },
       create: { id: lot.id, ...item, startsAt, originalEndsAt: endsAt, endsAt },
       update: item,
     });
     console.log(`seed: lote ${lot.externalId} (${lot.title})`);
+
+    if (lot.renewEndsInMs !== undefined) {
+      // Um único UPDATE condicional: se a liquidação ou o cancelamento já gravou, nada muda. O fim
+      // não entra no hash dos lances nem no selo da cabeça, então a auditoria segue íntegra.
+      const renewedEndsAt = new Date(now + lot.renewEndsInMs);
+      const { count } = await prisma.lot.updateMany({
+        where: { id: lot.id, settledAt: null, canceledAt: null },
+        data: { originalEndsAt: renewedEndsAt, endsAt: renewedEndsAt },
+      });
+      console.log(
+        `seed: fim do ${lot.externalId} ${count ? `renovado para ${renewedEndsAt.toISOString()}` : 'mantido (lote liquidado ou cancelado)'}`,
+      );
+    }
   }
 
   // Pelo caso de uso: a mesma regra, a mesma cadeia de hash e o mesmo extrato da API.
