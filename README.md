@@ -152,7 +152,7 @@ Sessão por JWT no cabeçalho `Authorization: Bearer <token>`, válido por 7 dia
 
 Os licitantes começam com um depósito de R$ 5.000,00 (chave `seed-deposit-<email>`: rodar o seed de novo não duplica).
 
-O seed também cria três lotes do `leiloeiro` (obras fictícias, `externalId` `seed-1` a `seed-3`) (imagens em `prisma/seed-assets/`, sem rede): um ao vivo até 14 dias depois da primeira execução, um agendado para 1 dia depois e um encerrado com lances e comprovante. Rodar de novo atualiza os dados mas não mexe nas datas.
+O seed também cria três lotes do `leiloeiro` (obras fictícias, `externalId` `seed-1` a `seed-3`) (imagens em `prisma/seed-assets/`, sem rede): um ao vivo até 7 dias depois da última execução, um agendado para 1 dia depois e um encerrado com lances e comprovante. Rodar de novo atualiza os dados mas não mexe nas datas, salvo o fim do lote ao vivo, que volta a ser 7 dias depois (se ainda não foi liquidado nem cancelado).
 
 No lote ao vivo, o seed dá três lances pelo mesmo caso de uso da API (R$ 500,00 do `licitante-1`, R$ 550,00 do `licitante-2` e R$ 600,00 do `licitante-1`), com chaves `seed-bid-1` a `seed-bid-3`: rodar de novo não duplica. Se o lote já encerrou ou recebeu lances maiores, o seed pula o lance e segue.
 
@@ -394,7 +394,7 @@ Escolhas de projeto da API, cada uma com o motivo. Onde há um limite, ele está
 - **Vitrine de encerrados com os 30 de fim mais recente.** Cancelados ficam fora da vitrine e aparecem no painel do leiloeiro e por link direto.
 - **Cadastro com papel escolhido.** `POST /auth/register` aceita `AUCTIONEER` ou `BIDDER` de quem pedir. Login e cadastro não limitam tentativas.
 - **JWT sem revogação.** O token é autocontido e o servidor não guarda sessão: ele vale 7 dias, e sair é apagar o token no cliente, sem logout no servidor.
-- **Seed em todo deploy.** O Cloud Run Job roda migração e seed a cada deploy, e o seed é reexecutável: os três usuários de teste voltam sempre com nome, papel e a senha de `SEED_PASSWORD`. As datas dos lotes do seed só são calculadas na primeira criação, para que rodar de novo não as mude; por isso o lote ao vivo do seed encerra 14 dias depois da primeira execução e, a partir daí, não recebe lances novos.
+- **Seed em todo deploy.** O Cloud Run Job roda migração e seed a cada deploy, e o seed é reexecutável: os três usuários de teste voltam sempre com nome, papel e a senha de `SEED_PASSWORD`. As datas dos lotes do seed só são calculadas na primeira criação, para que rodar de novo não as mude, com uma exceção: o fim do lote ao vivo do seed passa a ser 7 dias depois de cada execução, enquanto ele não for liquidado nem cancelado. Se ficar mais de 7 dias sem deploy, o lote encerra, é liquidado pelo agendador e não reabre (ver `prisma/seed.ts`).
 
 ## Estrutura
 
