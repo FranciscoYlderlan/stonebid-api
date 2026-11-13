@@ -2,7 +2,12 @@
 
 API do **Stonebid**, uma casa de leilões online: o leiloeiro monta lotes com obras de uma API pública, licitantes dão lances ao vivo com saldo simulado, quem vence recebe um comprovante compartilhável por link, e qualquer pessoa, sem login, audita o histórico de lances de um lote e verifica se ele foi adulterado.
 
-## No ar
+## Status: offline
+
+> [!IMPORTANT]
+> **O sistema está offline desde 2026-11-13.** Ele ficou no ar de **2026-10-29 a 2026-11-13**, durante o período de testes e avaliação, no Google Cloud (API e banco) e na Vercel (web). Depois disso a conta de faturamento do GCP foi encerrada, e os endereços abaixo não respondem mais. Para rodar o projeto, use o ambiente local ([Docker Compose](#rodar-localmente) ou Node).
+
+## No ar (período de testes, 2026-10-29 a 2026-11-13)
 
 | Ambiente | API                                                                                                                             | Web                                     |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
